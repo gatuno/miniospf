@@ -11,6 +11,7 @@
 #include "ospf.h"
 #include "utils.h"
 #include "glist.h"
+#include "lsa.h"
 
 IPAddr *locate_first_address (GList *address_list, int family) {
 	IPAddr *ip;
@@ -113,6 +114,27 @@ OSPFLink *ospf_create_iface (OSPFMini *miniospf, Interface *iface, struct in_add
 	ospf_link->state = OSPF_ISM_Down;
 	
 	return ospf_link;
+}
+
+void ospf_configure_router_id (OSPFMini *miniospf, struct in_addr router_id) {
+	struct in_addr empty;
+	int new = 0;
+	/* Cuando se configure el router id, buscar el Router LSA y corregirlo */
+	
+	memset (&empty.s_addr, 0, sizeof (empty.s_addr));
+	
+	if (memcmp (&miniospf->router_id.s_addr, &empty.s_addr, sizeof (uint32_t)) != 0) {
+		/* Eliminar el router LSA */
+		new = 1;
+	}
+	
+	memcpy (&miniospf->router_id.s_addr, &router_id.s_addr, sizeof (uint32_t));
+	
+	if (new) {
+		lsa_init_router_lsa (miniospf);
+	} else {
+		lsa_update_router_lsa (miniospf);
+	}
 }
 
 OSPFNeighbor *ospf_locate_neighbor (OSPFLink *ospf_link, struct in_addr *origen) {
@@ -311,6 +333,10 @@ void ospf_dr_election (OSPFLink *ospf_link) {
 	if (memcmp (&old_bdr.s_addr, &ospf_link->backup.s_addr, sizeof (uint32_t)) != 0 ||
 	    memcmp (&old_dr.s_addr, &ospf_link->designated.s_addr, sizeof (uint32_t)) != 0) {
 		ospf_check_adj (ospf_link);
+	}
+	
+	if (memcmp (&old_dr.s_addr, &ospf_link->designated.s_addr, sizeof (uint32_t)) != 0) {
+		lsa_change_designated (miniospf);
 	}
 }
 

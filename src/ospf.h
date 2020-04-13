@@ -14,6 +14,7 @@ OSPFLink *ospf_create_iface (OSPFMini *miniospf, Interface *iface, struct in_add
 void ospf_send_hello (OSPFMini *miniospf);
 void ospf_dr_election (OSPFLink *ospf_link);
 void ospf_process_hello (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFHeader *header);
+void ospf_configure_router_id (OSPFMini *miniospf, struct in_addr router_id);
 
 #endif
 

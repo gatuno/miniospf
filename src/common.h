@@ -42,13 +42,62 @@
 #define TRUE !FALSE
 #endif
 
-#define OSPF_INITIAL_SEQUENCE_NUMBER    0x80000001U
-
 enum {
 	OSPF_ISM_Down = 0,
 	OSPF_ISM_Waiting,
 	OSPF_ISM_DROther
 };
+
+enum {
+	LSA_ROUTER_LINK_TRANSIT = 2,
+	LSA_ROUTER_LINK_STUB = 3
+};
+
+enum {
+	LSA_ROUTER = 1,
+	LSA_NETWORK,
+	
+	LSA_EXTERNAL = 5
+};
+
+typedef struct {
+	struct in_addr link_id;
+	struct in_addr data;
+	
+	uint8_t type;
+	uint8_t n_tos;
+	
+	uint16_t tos_zero;
+	
+	uint8_t tos_type[16];
+	uint16_t tos[16];
+} LSARouterLink;
+
+typedef struct {
+	uint8_t options;
+	//uint16_t len;
+	uint8_t flags;
+	
+	uint16_t n_links;
+	LSARouterLink links[16];
+} LSARouter;
+
+/*typedef struct {
+	
+} LSANetwork;*/
+
+typedef struct {
+	uint8_t type;
+	uint16_t age;
+	struct in_addr link_state_id;
+	struct in_addr advert_router;
+	uint32_t seq_num;
+	int need_update;
+	
+	union {
+		LSARouter router;
+	};
+} LSA;
 
 typedef struct _IPAddr {
 	sa_family_t family;
@@ -143,6 +192,10 @@ typedef struct {
 	struct in_addr router_id;
 	
 	OSPFLink *iface;
+	
+	Interface *dummy_iface;
+	
+	LSA router_lsa;
 } OSPFMini;
 
 typedef struct {

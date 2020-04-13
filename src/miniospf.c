@@ -23,6 +23,7 @@
 #include "glist.h"
 #include "ospf.h"
 #include "utils.h"
+#include "lsa.h"
 
 #define ALL_OSPF_ROUTERS "224.0.0.5"
 #define ALL_OSPF_DESIGNATED_ROUTERS "224.0.0.6"
@@ -72,7 +73,7 @@ static void _sigterm_handler (int signum) {
 	}
 }
 
-static void _main_setup_signal (OSPFMini *miniospf) {
+static void _main_setup_signal (void) {
 	struct sigaction act;
 	sigset_t empty_mask;
 	
@@ -263,7 +264,8 @@ void main_loop (OSPFMini *miniospf) {
 
 int main (int argc, char *argv) {
 	OSPFMini miniospf;
-	Interface *iface_activa;
+	Interface *iface_activa, *pasiva;
+	struct in_addr router_id;
 	
 	miniospf.watcher = init_network_watcher ();
 	
@@ -280,10 +282,21 @@ int main (int argc, char *argv) {
 		return 2;
 	}
 	
+	pasiva = _interfaces_locate_by_name (miniospf.watcher->interfaces, "dummy0");
+	
+	if (pasiva == NULL) {
+		printf ("Interfaz %s not found\n", "dummy0");
+		
+		return 4;
+	}
+	
 	/* Activar el manejador de la señal */
 	sigterm_pipe_fds[0] = sigterm_pipe_fds[1] = -1;
 	
-	_main_setup_signal (&miniospf);
+	_main_setup_signal ();
+	
+	miniospf.iface = NULL;
+	miniospf.dummy_iface = NULL;
 	
 	/* Preparar las IP's 224.0.0.5 y 224.0.0.6 */
 	memset (&miniospf.all_ospf_routers_addr, 0, sizeof (miniospf.all_ospf_routers_addr));
@@ -296,8 +309,10 @@ int main (int argc, char *argv) {
 	miniospf.all_ospf_designated_addr.sin_family = AF_INET;
 	
 	/* Router ID */
-	char *router_id = "172.22.200.7";
-	inet_pton (AF_INET, router_id, &miniospf.router_id.s_addr);
+	char *router_id_str = "172.22.200.7";
+	inet_pton (AF_INET, router_id_str, &router_id.s_addr);
+	
+	ospf_configure_router_id (&miniospf, router_id);
 	
 	/* La area a la que pertenece esta interfaz */
 	char *area_id_str = "0.0.0.0";
@@ -306,12 +321,14 @@ int main (int argc, char *argv) {
 	
 	/* Crear la interfaz ospf de datos */
 	miniospf.iface = ospf_create_iface (&miniospf, iface_activa, area_id);
-	
 	if (miniospf.iface == NULL) {
 		printf ("Error\n");
 		
 		return 3;
 	}
+	miniospf.dummy_iface = pasiva;
+	
+	lsa_update_router_lsa (&miniospf);
 	
 	main_loop (&miniospf);
 	
