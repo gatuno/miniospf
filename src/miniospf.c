@@ -163,6 +163,9 @@ void process_packet (OSPFMini *miniospf, OSPFLink *ospf_link) {
 			case 1: /* OSPF Hello */
 				ospf_process_hello (miniospf, ospf_link, &header);
 				break;
+			case 2: /* OSPF DD */
+				ospf_process_dd (miniospf, ospf_link, &header);
+				break;
 		}
 	} while (ospf_link->has_nonblocking);
 }
@@ -255,7 +258,7 @@ void main_loop (OSPFMini *miniospf) {
 			
 			if (elapsed.tv_sec >= miniospf->iface->dead_router_interval) {
 				/* Timeout para waiting. Tiempo de elegir un router */
-				ospf_dr_election (miniospf->iface);
+				ospf_dr_election (miniospf, miniospf->iface);
 			}
 		}
 		/* Recorrer cada uno de los vecinos y eliminarlos basados en el dead router interval */

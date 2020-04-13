@@ -178,9 +178,31 @@ OSPFNeighbor * add_ospf_neighbor (OSPFLink *ospf_link, OSPFHeader *header, OSPFH
 	return vecino;
 }
 
-void ospf_check_adj (OSPFLink *ospf_link) {
-	/* Recorrer los vecinos y determinar si necesito o no adyacencias */
+void ospf_check_adj (OSPFMini *miniospf, OSPFLink *ospf_link) {
+	OSPFNeighbor *vecino;
+	GList *g;
 	
+	/* Recorrer los vecinos y determinar si necesito o no adyacencias */
+	for (g = ospf_link->neighbors; g != NULL; g = g->next) {
+		vecino = (OSPFNeighbor *) g->data;
+		
+		if (vecino->way < TWO_WAY) continue;
+		
+		if (memcmp (&vecino->neigh_addr.s_addr, &ospf_link->designated.s_addr, sizeof (uint32_t)) == 0 ||
+		    memcmp (&vecino->neigh_addr.s_addr, &ospf_link->backup.s_addr, sizeof (uint32_t)) == 0) {
+			if (vecino->way == TWO_WAY) {
+				vecino->way = EX_START;
+				
+				vecino->dd_seq = 0;
+				vecino->dd_flags = 0x07;
+				vecino->dd_sent = 0;
+				
+				ospf_send_dd (miniospf, ospf_link, vecino);
+			}
+		} else {
+			if (vecino->way > TWO_WAY) vecino->way = TWO_WAY;
+		}
+	}
 }
 
 GList *ospf_get_elegibles_list (OSPFLink *ospf_link) {
@@ -307,7 +329,7 @@ OSPFNeighbor *ospf_elect_bdr (OSPFLink *ospf_link, GList *elegibles) {
 	return bdr;
 }
 
-void ospf_dr_election (OSPFLink *ospf_link) {
+void ospf_dr_election (OSPFMini *miniospf, OSPFLink *ospf_link) {
 	GList *elegibles;
 	struct in_addr old_bdr, old_dr;
 	
@@ -332,7 +354,7 @@ void ospf_dr_election (OSPFLink *ospf_link) {
 	
 	if (memcmp (&old_bdr.s_addr, &ospf_link->backup.s_addr, sizeof (uint32_t)) != 0 ||
 	    memcmp (&old_dr.s_addr, &ospf_link->designated.s_addr, sizeof (uint32_t)) != 0) {
-		ospf_check_adj (ospf_link);
+		ospf_check_adj (miniospf, ospf_link);
 	}
 	
 	if (memcmp (&old_dr.s_addr, &ospf_link->designated.s_addr, sizeof (uint32_t)) != 0) {
@@ -400,12 +422,142 @@ void ospf_process_hello (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFHeader *he
 		memset (&empty, 0, sizeof (empty));
 		if (memcmp (&vecino->backup.s_addr, &header->origen.s_addr, sizeof (uint32_t)) == 0) {
 			ospf_link->state = OSPF_ISM_DROther;
-			ospf_dr_election (ospf_link);
+			ospf_dr_election (miniospf, ospf_link);
 		} else if (memcmp (&vecino->designated.s_addr, &header->origen.s_addr, sizeof (uint32_t)) == 0 &&
 			       memcmp (&vecino->backup.s_addr, &empty.s_addr, sizeof (uint32_t)) == 0) {
 			ospf_link->state = OSPF_ISM_DROther;
-			ospf_dr_election (ospf_link);
+			ospf_dr_election (miniospf, ospf_link);
 		}
+	}
+}
+
+void ospf_send_dd (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFNeighbor *vecino) {
+	GList *g;
+	unsigned char buffer [2048];
+	unsigned char buffer_lsa [2048];
+	size_t pos;
+	uint16_t t16;
+	uint32_t t32;
+	
+	ospf_fill_header (2, buffer, &miniospf->router_id, ospf_link->area);
+	pos = 24;
+	
+	t16 = htons (ospf_link->iface->mtu);
+	memcpy (&buffer[pos], &t16, sizeof (uint16_t));
+	pos = pos + 2;
+	
+	if ((vecino->dd_flags & 0x04) == 0) vecino->dd_flags &= ~(0x02); /* Desactivar la bandera de More */
+	
+	buffer[pos++] = 0x02; /* External Routing */
+	buffer[pos++] = vecino->dd_flags;
+	
+	t32 = htonl (vecino->dd_seq);
+	memcpy (&buffer[pos], &t32, sizeof (uint32_t));
+	pos = pos + 4;
+	
+	/* Enviar nuestro único Router LSA si no ha sido enviado ya */
+	if ((vecino->dd_flags & 0x04) == 0 && vecino->dd_sent == 0) {
+		lsa_write_lsa (buffer_lsa, &miniospf->router_lsa);
+		memcpy (&buffer[pos], buffer_lsa, 20);
+		pos = pos + 20;
+		
+		vecino->dd_sent = 1;
+	}
+	
+	ospf_fill_header_end (buffer, pos);
+	
+	int res;
+	
+	struct sockaddr_in dest;
+	memset (&dest, 0, sizeof (dest));
+	memcpy (&dest.sin_addr, &vecino->neigh_addr, sizeof (dest.sin_addr));
+	dest.sin_family = AF_INET;
+	
+	res = sendto (miniospf->iface->s, buffer, pos, 0, (struct sockaddr *) &dest, sizeof (dest));
+	
+	if (res < 0) {
+		perror ("Sendto");
+	}
+}
+
+void ospf_db_desc_proc (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFHeader *header, OSPFNeighbor *vecino, OSPFDD *dd) {
+	/* Recorrer cada lsa extra en este dd, y agregar a una lista de requests */
+	
+	if ((vecino->dd_flags & 0x01) == 0x01) {
+		/* Somos los maestros */
+		vecino->dd_seq++;
+		
+		/* Si él ya no tiene nada que enviar, ni yo, terminar el intercambio */
+		if ((dd->flags & 0x02) == 0 && (vecino->dd_flags & 0x02) == 0) {
+			vecino->way = FULL;
+		} else {
+			ospf_send_dd (miniospf, ospf_link, vecino);
+		}
+	} else {
+		vecino->dd_seq = dd->dd_seq;
+		
+		ospf_send_dd (miniospf, ospf_link, vecino);
+		
+		if ((dd->flags & 0x02) == 0 && (vecino->dd_flags & 0x02) == 0) {
+			vecino->way = FULL;
+		}
+	}
+}
+
+void ospf_process_dd (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFHeader *header) {
+	OSPFDD dd;
+	OSPFNeighbor *vecino;
+	
+	memset (&dd, 0, sizeof (dd));
+	
+	memcpy (&dd.mtu, header->buffer, sizeof (dd.mtu));
+	dd.mtu = ntohs (dd.mtu);
+	
+	dd.options = header->buffer[2];
+	dd.flags = header->buffer[3];
+	
+	memcpy (&dd.dd_seq, &header->buffer[4], sizeof (dd.dd_seq));
+	dd.dd_seq = ntohs (dd.dd_seq);
+	
+	dd.n_lsas = (header->len - 24 - 8) / 20;
+	dd.lsas = (OSPFDDLSA *) &header->buffer[8];
+	
+	vecino = ospf_locate_neighbor (ospf_link, &header->origen);
+	
+	if (vecino == NULL) {
+		/* ¿Recibí un paquete de un vecino que no tengo hello? */
+		return;
+	}
+	
+	/* Revisar si este paquete tiene el master, y ver quién debe ser el master */
+	switch (vecino->way) {
+		case EX_START:
+		if ((dd.flags & 0x07) == 0x07 && header->len == 32) {
+			/* Él quiere ser el maestro */
+			if (memcmp (&vecino->neigh_addr.s_addr, &ospf_link->main_addr->sin_addr.s_addr, sizeof (uint32_t)) > 0) {
+				/* Somo esclavos, obedecer */
+				vecino->dd_seq = dd.dd_seq;
+				vecino->way = EXCHANGE;
+				/* Quitar las banderas de INIT y Master */
+				vecino->dd_flags &= ~(0x01 | 0x04);
+			} else {
+				/* Enviar nuestro paquete MASTER Init */
+				break;
+			}
+		} else if ((dd.flags & 0x01) == 0 && (dd.flags & 0x04) == 0 && vecino->dd_seq == dd.dd_seq &&
+		           memcmp (&vecino->neigh_addr.s_addr, &ospf_link->main_addr->sin_addr.s_addr, sizeof (uint32_t)) < 0) {
+			/* Es un ack de nuestro esclavo */
+			vecino->way = EXCHANGE;
+			
+			/* Quitar Init */
+			vecino->dd_flags &= ~(0x04);
+		} else {
+			printf ("Negociación fallida\n");
+			break;
+		}
+		
+		ospf_db_desc_proc (miniospf, ospf_link, header, vecino, &dd);
+		break;
 	}
 }
 
@@ -542,5 +694,3 @@ void ospf_send_hello (OSPFMini *miniospf) {
 	}
 }
 
-/*void ospf_list_elegible_routers (
-void ospf_dr_election*/

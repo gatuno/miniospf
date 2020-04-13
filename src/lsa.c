@@ -119,6 +119,74 @@ void lsa_populate_router (OSPFMini *miniospf) {
 	}
 }
 
+int lsa_write_lsa (unsigned char *buffer, LSA *lsa) {
+	int pos, pos_len;
+	uint32_t t32;
+	uint16_t t16;
+	int g, h;
+	
+	pos = 0;
+	
+	t16 = htonl (lsa->age);
+	memcpy (&buffer[pos], &t16, sizeof (uint16_t));
+	pos += 2;
+	
+	buffer[pos++] = 0x02;
+	buffer[pos++] = lsa->type;
+	
+	memcpy (&buffer[pos], &lsa->link_state_id.s_addr, sizeof (uint32_t));
+	pos += 4;
+	
+	memcpy (&buffer[pos], &lsa->advert_router.s_addr, sizeof (uint32_t));
+	pos += 4;
+	
+	t32 = htonl (lsa->seq_num);
+	memcpy (&buffer[pos], &t32, sizeof (uint32_t));
+	pos += 4;
+	
+	pos_len = pos;
+	pos += 2;
+	
+	buffer[pos++] = 0x02;
+	
+	t16 = htons (lsa->router.n_links);
+	memcpy (&buffer[pos], &t16, sizeof (uint16_t));
+	pos += 2;
+	
+	for (g = 0; g < lsa->router.n_links; g++) {
+		memcpy (&buffer[pos], &lsa->router.links[g].link_id.s_addr, sizeof (uint32_t));
+		pos += 4;
+		
+		memcpy (&buffer[pos], &lsa->router.links[g].data.s_addr, sizeof (uint32_t));
+		pos += 4;
+		
+		buffer[pos++] = lsa->router.links[g].type;
+		
+		buffer[pos++] = lsa->router.links[g].n_tos;
+		
+		t16 = htons (lsa->router.links[g].tos_zero);
+		memcpy (&buffer[pos], &t16, sizeof (uint16_t));
+		pos += 2;
+		
+		for (h = 0; h < lsa->router.links[g].n_tos; h++) {
+			buffer[pos++] = lsa->router.links[g].tos_type[h];
+			buffer[pos++] = 0;
+			
+			t16 = htons (lsa->router.links[g].tos[h]);
+			memcpy (&buffer[pos], &t16, sizeof (uint16_t));
+			pos += 2;
+		}
+	}
+	
+	t16 = htons (pos);
+	memcpy (&buffer[pos_len], &t16, sizeof (uint16_t));
+	
+	/* Calcular el checksum */
+	fletcher_checksum (&buffer[2], pos - 2, 14);
+	
+	return pos;
+}
+
 void lsa_update_router_lsa (OSPFMini *miniospf) {
 	memcpy (&miniospf->router_lsa.link_state_id.s_addr, &miniospf->router_id.s_addr, sizeof (uint32_t));
 	memcpy (&miniospf->router_lsa.advert_router.s_addr, &miniospf->router_id.s_addr, sizeof (uint32_t));

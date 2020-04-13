@@ -147,7 +147,9 @@ typedef struct {
 enum {
 	ONE_WAY = 0,
 	TWO_WAY,
-	EX_START
+	EX_START,
+	EXCHANGE,
+	FULL
 };
 
 typedef struct {
@@ -161,6 +163,9 @@ typedef struct {
 	struct in_addr backup;
 	
 	struct timespec last_seen;
+	uint32_t dd_seq;
+	uint8_t dd_flags;
+	int dd_sent;
 } OSPFNeighbor;
 
 typedef struct {
@@ -223,6 +228,27 @@ typedef struct {
 	struct in_addr designated;
 	struct in_addr backup;
 } OSPFHello;
+
+typedef struct {
+	uint16_t age;
+	uint8_t options;
+	uint8_t type;
+	uint32_t link_state_id;
+	uint32_t advert_router;
+	uint32_t dd_seq;
+	uint16_t chck;
+	uint16_t length;
+} OSPFDDLSA;
+
+typedef struct {
+	uint16_t mtu;
+	uint8_t options;
+	uint8_t flags;
+	uint32_t dd_seq;
+	
+	int n_lsas;
+	OSPFDDLSA *lsas;
+} OSPFDD;
 
 extern int sigterm_pipe_fds[2];
 
