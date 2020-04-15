@@ -87,12 +87,18 @@ typedef struct {
 } LSANetwork;*/
 
 typedef struct {
-	uint8_t type;
 	uint16_t age;
+	uint8_t options;
+	uint8_t type;
 	struct in_addr link_state_id;
 	struct in_addr advert_router;
 	uint32_t seq_num;
+	uint16_t checksum;
+	uint16_t length;
+	
 	int need_update;
+	
+	struct timespec age_timestamp;
 	
 	union {
 		LSARouter router;
@@ -149,6 +155,7 @@ enum {
 	TWO_WAY,
 	EX_START,
 	EXCHANGE,
+	LOADING,
 	FULL
 };
 
@@ -166,6 +173,21 @@ typedef struct {
 	uint32_t dd_seq;
 	uint8_t dd_flags;
 	int dd_sent;
+	
+	/* Last sent Database Description packet. */
+	//struct ospf_packet *last_send;
+	/* Timestemp when last Database Description packet was sent */
+	struct timespec last_send_ts;
+	struct timespec last_request;
+
+	/* Last received Databse Description packet. */
+	struct {
+		uint8_t options;
+		uint8_t flags;
+		uint32_t dd_seq;
+	} last_recv;
+	
+	GList *requests;
 } OSPFNeighbor;
 
 typedef struct {
@@ -235,8 +257,8 @@ typedef struct {
 	uint8_t type;
 	uint32_t link_state_id;
 	uint32_t advert_router;
-	uint32_t dd_seq;
-	uint16_t chck;
+	uint32_t seq_num;
+	uint16_t checksum;
 	uint16_t length;
 } OSPFDDLSA;
 
@@ -249,6 +271,12 @@ typedef struct {
 	int n_lsas;
 	OSPFDDLSA *lsas;
 } OSPFDD;
+
+typedef struct {
+	uint32_t type;
+	uint32_t link_state_id;
+	uint32_t advert_router;
+} OSPFReq;
 
 extern int sigterm_pipe_fds[2];
 

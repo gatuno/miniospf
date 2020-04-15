@@ -166,6 +166,12 @@ void process_packet (OSPFMini *miniospf, OSPFLink *ospf_link) {
 			case 2: /* OSPF DD */
 				ospf_process_dd (miniospf, ospf_link, &header);
 				break;
+			case 3: /* OSPF Request */
+				ospf_process_req (miniospf, ospf_link, &header);
+				break;
+			case 4: /* OSPF Update */
+				ospf_process_update (miniospf, ospf_link, &header);
+				break;
 		}
 	} while (ospf_link->has_nonblocking);
 }
@@ -212,7 +218,7 @@ void main_loop (OSPFMini *miniospf) {
 	}
 	
 	do {
-		res = poll (poller, poller_count, 30);
+		res = poll (poller, poller_count, 50);
 		
 		if (res < 0 && errno != EINTR) {
 			break;
@@ -262,7 +268,20 @@ void main_loop (OSPFMini *miniospf) {
 			}
 		}
 		/* Recorrer cada uno de los vecinos y eliminarlos basados en el dead router interval */
+		
+		/* Revisar si nuestro LSA ha envejecido mas de treinta minutos para renovarlo */
+		
+		/* Si nuestro LSA cambió, enviar un update, si es que tenemos designated router */
+		if (miniospf->router_lsa.need_update) {
+			ospf_send_update_router_link (miniospf);
+		}
 	} while (1);
+	
+	/* Envejecer prematuramente mi LSA para provocar que se elimine pronto */
+	lsa_update_router_lsa (miniospf);
+	miniospf->router_lsa.age = OSPF_LSA_MAXAGE;
+	
+	ospf_send_update_router_link (miniospf);
 }
 
 int main (int argc, char *argv) {
