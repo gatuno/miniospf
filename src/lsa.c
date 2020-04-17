@@ -85,17 +85,17 @@ void lsa_populate_router (OSPFMini *miniospf) {
 		
 		if (has_designated) {
 			/* Buscar el transit, y eliminar el stub si existe */
-			found = 0;
+			found = -1;
 			for (h = 0; h < lsa->router.n_links; h++) {
 				if (lsa->router.links[h].type == LSA_ROUTER_LINK_TRANSIT &&
 				    memcmp (&miniospf->iface->main_addr->sin_addr.s_addr, &lsa->router.links[h].data.s_addr, sizeof (uint32_t)) == 0) {
-					found = 1;
+					found = h;
 					printf ("El link transit del router lsa existe\n");
 					break;
 				}
 			}
 			
-			if (found == 0) {
+			if (found == -1) {
 				/* Crear el transit */
 				h = lsa->router.n_links;
 				
@@ -107,6 +107,8 @@ void lsa_populate_router (OSPFMini *miniospf) {
 				lsa->router.links[h].tos_zero = 10; /* Usar la configuración de miniospf */
 				
 				lsa->router.n_links++;
+			} else {
+				memcpy (&lsa->router.links[found].link_id.s_addr, &miniospf->iface->designated.s_addr, sizeof (uint32_t));
 			}
 			
 			netmask = netmask4 (miniospf->iface->main_addr->prefix);
@@ -177,7 +179,7 @@ void lsa_populate_router (OSPFMini *miniospf) {
 			}
 			
 			if (found == 0) {
-				/* Crear el transit */
+				/* Crear el stub */
 				h = lsa->router.n_links;
 				
 				lsa->router.links[h].type = LSA_ROUTER_LINK_STUB;

@@ -268,6 +268,7 @@ void main_loop (OSPFMini *miniospf) {
 			}
 		}
 		/* Recorrer cada uno de los vecinos y eliminarlos basados en el dead router interval */
+		ospf_check_neighbors (miniospf, now);
 		
 		/* Revisar si nuestro LSA ha envejecido mas de treinta minutos para renovarlo */
 		

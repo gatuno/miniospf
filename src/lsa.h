@@ -7,7 +7,9 @@
 
 #include "common.h"
 
+
 #define OSPF_LSA_MAXAGE                       3600
+#define OSPF_LS_REFRESH_TIME                  1800
 #define OSPF_LSA_MAXAGE_DIFF                   900
 #define LS_AGE(x)      (OSPF_LSA_MAXAGE < lsa_get_age(x) ? OSPF_LSA_MAXAGE : lsa_get_age(x))
 #define IS_LSA_MAXAGE(L)        (LS_AGE ((L)) == OSPF_LSA_MAXAGE)

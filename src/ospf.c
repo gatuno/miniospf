@@ -5,6 +5,9 @@
 #include <unistd.h>
 #include <fcntl.h>
 
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <arpa/inet.h>
 #include <time.h>
 
 #include "common.h"
@@ -157,7 +160,7 @@ OSPFNeighbor *ospf_locate_neighbor (OSPFLink *ospf_link, struct in_addr *origen)
 	return NULL;
 }
 
-OSPFNeighbor * add_ospf_neighbor (OSPFLink *ospf_link, OSPFHeader *header, OSPFHello *hello) {
+OSPFNeighbor * ospf_add_neighbor (OSPFLink *ospf_link, OSPFHeader *header, OSPFHello *hello) {
 	OSPFNeighbor *vecino;
 	
 	vecino = (OSPFNeighbor *) malloc (sizeof (OSPFNeighbor));
@@ -179,6 +182,15 @@ OSPFNeighbor * add_ospf_neighbor (OSPFLink *ospf_link, OSPFHeader *header, OSPFH
 	ospf_link->neighbors = g_list_append (ospf_link->neighbors, vecino);
 	
 	return vecino;
+}
+
+void ospf_del_neighbor (OSPFLink *ospf_link, OSPFNeighbor *vecino) {
+	/* Primero, borrar los recursos como la lista de requests */
+	g_list_free_full (vecino->requests, free);
+	
+	free (vecino);
+	
+	ospf_link->neighbors = g_list_remove (ospf_link->neighbors, vecino);
 }
 
 void ospf_neighbor_state_change (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFNeighbor *vecino, int state) {
@@ -299,6 +311,9 @@ OSPFNeighbor *ospf_elect_dr (OSPFLink *ospf_link, GList *elegibles) {
 	if (dr_list != NULL) {
 		dr = ospf_dr_election_sub (dr_list);
 	} else {
+		/* Vaciar el bdr */
+		memset (&ospf_link->backup.s_addr, 0, sizeof (ospf_link->backup.s_addr));
+		
 		/* Promover al Backup */
 		dr = bdr;
 	}
@@ -407,6 +422,7 @@ void ospf_process_hello (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFHeader *he
 	struct in_addr empty;
 	int found;
 	struct timespec now;
+	int neighbor_change;
 	
 	hello = (OSPFHello *) header->buffer;
 	
@@ -426,7 +442,7 @@ void ospf_process_hello (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFHeader *he
 	vecino = ospf_locate_neighbor (ospf_link, &header->origen);
 	
 	if (vecino == NULL) {
-		vecino = add_ospf_neighbor (ospf_link, header, hello);
+		vecino = ospf_add_neighbor (ospf_link, header, hello);
 	} else {
 		/* Actualizar los datos del vecino */
 		memcpy (&vecino->router_id.s_addr, &header->router_id.s_addr, sizeof (uint32_t));
@@ -449,11 +465,14 @@ void ospf_process_hello (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFHeader *he
 	clock_gettime (CLOCK_MONOTONIC, &now);
 	vecino->last_seen = now;
 	
+	neighbor_change = 0;
 	if (vecino->way == ONE_WAY && found == 1) {
 		ospf_neighbor_state_change (miniospf, ospf_link, vecino, TWO_WAY);
+		neighbor_change = 1;
 	} else if (vecino->way >= TWO_WAY && found == 0) {
 		/* Degradar al vecino, nos dejó de reconocer */
 		ospf_neighbor_state_change (miniospf, ospf_link, vecino, ONE_WAY);
+		neighbor_change = 1;
 	}
 	/* Si la interfaz está en esta Waiting
 	 * Y este vecino se declara como backup,
@@ -469,13 +488,15 @@ void ospf_process_hello (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFHeader *he
 			ospf_link->state = OSPF_ISM_DROther;
 			ospf_dr_election (miniospf, ospf_link);
 		}
+	} else if (ospf_link->state == OSPF_ISM_DROther && neighbor_change) {
+		ospf_dr_election (miniospf, ospf_link);
 	}
 }
 
 void ospf_send_dd (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFNeighbor *vecino) {
 	GList *g;
 	unsigned char buffer [2048];
-	size_t pos;
+	size_t pos, pos_flags;
 	uint16_t t16;
 	uint32_t t32;
 	
@@ -487,14 +508,13 @@ void ospf_send_dd (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFNeighbor *vecino
 	pos = pos + 2;
 	
 	/* Si somos maestros, tenemos que enviar el more en el primer paquete */
-	if (IS_SET_DD_I (vecino->dd_flags) && IS_SET_DD_MS (vecino->dd_flags)) {
-		vecino->dd_flags |= OSPF_DD_FLAG_M;
-	} else if (!IS_SET_DD_MS (vecino->dd_flags) && !IS_SET_DD_I (vecino->dd_flags)) {
+	if (!IS_SET_DD_MS (vecino->dd_flags) && !IS_SET_DD_I (vecino->dd_flags)) {
 		/* Soy esclavo, normalmente mando mi primer router lsa en el primer paquete */
-		vecino->dd_flags &= ~(OSPF_DD_FLAG_M); /* Desactivar la bandera de More */
+		
 	}
 	
 	buffer[pos++] = 0x02; /* External Routing */
+	pos_flags = pos;
 	buffer[pos++] = vecino->dd_flags;
 	
 	t32 = htonl (vecino->dd_seq);
@@ -503,6 +523,9 @@ void ospf_send_dd (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFNeighbor *vecino
 	
 	/* Enviar nuestro único Router LSA si no ha sido enviado ya */
 	if (!IS_SET_DD_I (vecino->dd_flags) && vecino->dd_sent == 0) {
+		vecino->dd_flags &= ~(OSPF_DD_FLAG_M); /* Desactivar la bandera de More */
+		buffer[pos_flags] = vecino->dd_flags;
+		
 		lsa_write_lsa_header (&buffer[pos], &miniospf->router_lsa);
 		pos = pos + 20;
 		
@@ -830,6 +853,7 @@ void ospf_process_update (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFHeader *h
 	uint32_t t32;
 	int res, g;
 	GList *pos_req;
+	int ack_count;
 	
 	vecino = ospf_locate_neighbor (ospf_link, &header->origen);
 	
@@ -849,6 +873,7 @@ void ospf_process_update (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFHeader *h
 	
 	memcpy (&lsa_count, header->buffer, sizeof (uint32_t));
 	lsa_count = ntohl (lsa_count);
+	ack_count = 0;
 	
 	for (g = 0, len = 4; g < lsa_count; g++) {
 		update = (OSPFDDLSA *) &header->buffer[len];
@@ -856,17 +881,6 @@ void ospf_process_update (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFHeader *h
 		lsa_create_from_dd (update, &lsa);
 		/* Revisar el UPDATE, si es algo que nosotros pedimos previamente, quitar de la lista de peticiones y no enviar ACK */
 		if (lsa_match (&miniospf->router_lsa, &lsa) == 0) {
-			/* Quitar el Request de la lista de request */
-			req = lsa_create_request_from_lsa (&lsa);
-			pos_req = g_list_find_custom (vecino->requests, req, (GCompareFunc) lsa_request_match);
-			
-			if (pos_req != NULL) {
-				free (pos_req->data);
-				vecino->requests = g_list_delete_link (vecino->requests, pos_req);
-			}
-			
-			free (req);
-			
 			switch (lsa_more_recent (&miniospf->router_lsa, &lsa)) {
 				case -1:
 					/* El vecino tiene un LSA mas reciente, actualizar nuestra base de datos y reenviar nuestro LSA para "imponernos" */
@@ -874,11 +888,22 @@ void ospf_process_update (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFHeader *h
 					lsa_update_router_lsa (miniospf);
 					break;
 			}
+		}
+		
+		/* Si el update es respuesta a uno de nuestros request, quitar de la lista y no mandar ACK */
+		req = lsa_create_request_from_lsa (&lsa);
+		pos_req = g_list_find_custom (vecino->requests, req, (GCompareFunc) lsa_request_match);
+		free (req);
+		
+		if (pos_req != NULL) {
+			free (pos_req->data);
+			vecino->requests = g_list_delete_link (vecino->requests, pos_req);
 			
 			/* Si ya no hay mas requests, y estamos en LOADING, pasar a FULL */
 			if (vecino->way == LOADING && vecino->requests == NULL) {
 				ospf_neighbor_state_change (miniospf, ospf_link, vecino, FULL);
 			}
+			
 			len += lsa.length;
 			continue;
 		}
@@ -887,10 +912,11 @@ void ospf_process_update (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFHeader *h
 		pos += 20;
 		
 		len += lsa.length;
+		ack_count++;
 	}
 	
-	if (pos == 24) {
-		/* Nada que enviar */
+	if (ack_count == 0) {
+		/* Ningun LSA que hacer ACK */
 		return;
 	}
 	ospf_fill_header_end (buffer, pos);
@@ -943,6 +969,33 @@ void ospf_send_update_router_link (OSPFMini *miniospf) {
 		perror ("Sendto");
 	} else {
 		miniospf->router_lsa.need_update = 0;
+	}
+}
+
+void ospf_check_neighbors (OSPFMini *miniospf, struct timespec now) {
+	OSPFLink *ospf_link = miniospf->iface;
+	GList *g;
+	OSPFNeighbor *vecino;
+	struct timespec elapsed;
+	
+	int vecino_changed = 0;
+	/* Recorrer todos los vecinos, buscar vecinos muertos para eliminar y correr las elecciones otra vez */
+	g = ospf_link->neighbors;
+	while (g != NULL) {
+		vecino = (OSPFNeighbor *) g->data;
+		elapsed = timespec_diff (vecino->last_seen, now);
+		
+		g = g->next;
+		if (elapsed.tv_sec >= ospf_link->dead_router_interval) {
+			/* Timeout para este vecino, matarlo */
+			ospf_del_neighbor (ospf_link, vecino);
+			
+			vecino_changed = 1;
+		}
+	}
+	
+	if (vecino_changed == 1) {
+		ospf_dr_election (miniospf, ospf_link);
 	}
 }
 

@@ -35,6 +35,7 @@ void ospf_send_update_router_link (OSPFMini *miniospf);
 void ospf_process_update (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFHeader *header);
 void ospf_neighbor_state_change (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFNeighbor *vecino, int state);
 void ospf_send_req (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFNeighbor *vecino);
+void ospf_check_neighbors (OSPFMini *miniospf, struct timespec now);
 
 #endif
 
