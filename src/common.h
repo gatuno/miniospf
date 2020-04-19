@@ -159,6 +159,17 @@ enum {
 	FULL
 };
 
+struct ospf_packet {
+	/* Pointer to data stream. */
+	unsigned char buffer[2048];
+
+	/* IP destination address. */
+	struct sockaddr_in dest;
+
+	/* OSPF packet length. */
+	uint16_t length;
+};
+
 typedef struct {
 	struct in_addr router_id;
 	struct in_addr neigh_addr;
@@ -175,7 +186,7 @@ typedef struct {
 	int dd_sent;
 	
 	/* Last sent Database Description packet. */
-	//struct ospf_packet *last_send;
+	struct ospf_packet dd_last_sent;
 	/* Timestemp when last Database Description packet was sent */
 	struct timespec last_send_ts;
 	struct timespec last_request;

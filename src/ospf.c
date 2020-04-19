@@ -17,6 +17,7 @@
 #include "lsa.h"
 
 static int ospf_db_desc_is_dup (OSPFDD *dd, OSPFNeighbor *vecino);
+void ospf_resend_dd (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFNeighbor *vecino);
 
 IPAddr *locate_first_address (GList *address_list, int family) {
 	IPAddr *ip;
@@ -493,6 +494,29 @@ void ospf_process_hello (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFHeader *he
 	}
 }
 
+void ospf_save_last_dd (OSPFMini *miniospf, OSPFNeighbor *vecino, char *buffer, uint16_t len) {
+	if (len == 0) return;
+	
+	memcpy (vecino->dd_last_sent.buffer, buffer, len);
+	vecino->dd_last_sent.length = len;
+	
+	memset (&vecino->dd_last_sent.dest, 0, sizeof (vecino->dd_last_sent.dest));
+	memcpy (&vecino->dd_last_sent.dest.sin_addr, &vecino->neigh_addr, sizeof (vecino->dd_last_sent.dest.sin_addr));
+	vecino->dd_last_sent.dest.sin_family = AF_INET;
+}
+
+void ospf_resend_dd (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFNeighbor *vecino) {
+	int res;
+	
+	printf ("Reenviando OSPF DD\n");
+	
+	res = sendto (miniospf->iface->s, vecino->dd_last_sent.buffer, vecino->dd_last_sent.length, 0, (struct sockaddr *) &vecino->dd_last_sent.dest, sizeof (vecino->dd_last_sent.dest));
+	
+	if (res < 0) {
+		perror ("Sendto");
+	}
+}
+
 void ospf_send_dd (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFNeighbor *vecino) {
 	GList *g;
 	unsigned char buffer [2048];
@@ -546,6 +570,8 @@ void ospf_send_dd (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFNeighbor *vecino
 	if (res < 0) {
 		perror ("Sendto");
 	}
+	
+	ospf_save_last_dd (miniospf, vecino, buffer, pos);
 }
 
 void ospf_send_req (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFNeighbor *vecino) {
@@ -708,7 +734,8 @@ void ospf_process_dd (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFHeader *heade
 			if (IS_SET_DD_MS (vecino->dd_flags)) {
 				/* Ignorar paquete del esclavo duplicado */
 			} else {
-				/* TODO: Reenviar el último paquete dd enviado */
+				/* Reenviar el último paquete dd enviado */
+				ospf_resend_dd (miniospf, ospf_link, vecino);
 			}
 			break;
 		}
@@ -743,7 +770,8 @@ void ospf_process_dd (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFHeader *heade
 			if (IS_SET_DD_MS (vecino->dd_flags)) {
 				/* Ignorar paquete del esclavo duplicado */
 			} else {
-				/* TODO: Reenviar el último paquete dd enviado */
+				/* Reenviar el último paquete dd enviado */
+				ospf_resend_dd (miniospf, ospf_link, vecino);
 			}
 			break;
 		}

@@ -271,6 +271,10 @@ void main_loop (OSPFMini *miniospf) {
 		ospf_check_neighbors (miniospf, now);
 		
 		/* Revisar si nuestro LSA ha envejecido mas de treinta minutos para renovarlo */
+		if (LS_AGE(&miniospf->router_lsa) > OSPF_LS_REFRESH_TIME) {
+			/* Refrescar nuestro LSA */
+			lsa_update_router_lsa (miniospf);
+		}
 		
 		/* Si nuestro LSA cambió, enviar un update, si es que tenemos designated router */
 		if (miniospf->router_lsa.need_update) {
