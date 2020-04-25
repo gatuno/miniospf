@@ -188,8 +188,8 @@ typedef struct {
 	/* Last sent Database Description packet. */
 	struct ospf_packet dd_last_sent;
 	/* Timestemp when last Database Description packet was sent */
-	struct timespec last_send_ts;
-	struct timespec last_request;
+	struct timespec dd_last_sent_time;
+	struct timespec request_last_sent_time;
 
 	/* Last received Databse Description packet. */
 	struct {

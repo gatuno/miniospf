@@ -294,6 +294,7 @@ int main (int argc, char *argv) {
 	Interface *iface_activa, *pasiva;
 	struct in_addr router_id;
 	
+	memset (&miniospf, 0, sizeof (miniospf));
 	miniospf.watcher = init_network_watcher ();
 	
 	if (miniospf.watcher == NULL) {
@@ -321,9 +322,6 @@ int main (int argc, char *argv) {
 	sigterm_pipe_fds[0] = sigterm_pipe_fds[1] = -1;
 	
 	_main_setup_signal ();
-	
-	miniospf.iface = NULL;
-	miniospf.dummy_iface = NULL;
 	
 	/* Preparar las IP's 224.0.0.5 y 224.0.0.6 */
 	memset (&miniospf.all_ospf_routers_addr, 0, sizeof (miniospf.all_ospf_routers_addr));
@@ -355,7 +353,7 @@ int main (int argc, char *argv) {
 	}
 	miniospf.dummy_iface = pasiva;
 	
-	lsa_update_router_lsa (&miniospf);
+	//lsa_update_router_lsa (&miniospf);
 	
 	main_loop (&miniospf);
 	

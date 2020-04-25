@@ -129,7 +129,7 @@ void ospf_configure_router_id (OSPFMini *miniospf, struct in_addr router_id) {
 	
 	memset (&empty.s_addr, 0, sizeof (empty.s_addr));
 	
-	if (memcmp (&miniospf->router_id.s_addr, &empty.s_addr, sizeof (uint32_t)) != 0) {
+	if (memcmp (&miniospf->router_id.s_addr, &empty.s_addr, sizeof (uint32_t)) == 0) {
 		/* Eliminar el router LSA */
 		new = 1;
 	}
@@ -208,6 +208,7 @@ void ospf_neighbor_state_change (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFNe
 			vecino->dd_seq++;
 		}
 		
+		vecino->dd_sent = 0;
 		vecino->dd_flags = OSPF_DD_FLAG_I|OSPF_DD_FLAG_M|OSPF_DD_FLAG_MS;
 		ospf_send_dd (miniospf, ospf_link, vecino);
 	} else if (state == EXCHANGE || state == LOADING) {
@@ -515,6 +516,9 @@ void ospf_resend_dd (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFNeighbor *veci
 	if (res < 0) {
 		perror ("Sendto");
 	}
+	
+	/* Marcar el timestamp de la última vez que envié el DD */
+	clock_gettime (CLOCK_MONOTONIC, &vecino->dd_last_sent_time);
 }
 
 void ospf_send_dd (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFNeighbor *vecino) {
@@ -530,12 +534,6 @@ void ospf_send_dd (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFNeighbor *vecino
 	t16 = htons (ospf_link->iface->mtu);
 	memcpy (&buffer[pos], &t16, sizeof (uint16_t));
 	pos = pos + 2;
-	
-	/* Si somos maestros, tenemos que enviar el more en el primer paquete */
-	if (!IS_SET_DD_MS (vecino->dd_flags) && !IS_SET_DD_I (vecino->dd_flags)) {
-		/* Soy esclavo, normalmente mando mi primer router lsa en el primer paquete */
-		
-	}
 	
 	buffer[pos++] = 0x02; /* External Routing */
 	pos_flags = pos;
@@ -571,6 +569,9 @@ void ospf_send_dd (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFNeighbor *vecino
 		perror ("Sendto");
 	}
 	
+	/* Marcar el timestamp de la última vez que envié el DD */
+	clock_gettime (CLOCK_MONOTONIC, &vecino->dd_last_sent_time);
+	
 	ospf_save_last_dd (miniospf, vecino, buffer, pos);
 }
 
@@ -588,6 +589,7 @@ void ospf_send_req (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFNeighbor *vecin
 	ospf_fill_header (3, buffer, &miniospf->router_id, ospf_link->area);
 	pos = 24;
 	
+	/* TODO: Hacer un ciclo aquí */
 	/* Enviar tantos requests como sea posible */
 	t32 = htonl (req->type);
 	memcpy (&buffer[pos], &t32, sizeof (uint32_t));
@@ -613,6 +615,8 @@ void ospf_send_req (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFNeighbor *vecin
 	if (res < 0) {
 		perror ("Sendto");
 	}
+	
+	clock_gettime (CLOCK_MONOTONIC, &vecino->request_last_sent_time);
 }
 
 void ospf_db_desc_proc (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFHeader *header, OSPFNeighbor *vecino, OSPFDD *dd) {
@@ -1019,6 +1023,24 @@ void ospf_check_neighbors (OSPFMini *miniospf, struct timespec now) {
 			ospf_del_neighbor (ospf_link, vecino);
 			
 			vecino_changed = 1;
+		}
+		
+		/* Revisar si estamos en EX_START o EXCHANGE con master, para reenviar el DD */
+		if (vecino->way == EX_START || (vecino->way == EXCHANGE && IS_SET_DD_MS (vecino->dd_flags))) {
+			elapsed = timespec_diff (vecino->dd_last_sent_time, now);
+			
+			if (elapsed.tv_sec >= /* Retransmit interval */ 10) {
+				ospf_resend_dd (miniospf, ospf_link, vecino);
+			}
+		}
+		
+		/* Si estamos estado EXCHANGE o LOADING, y no he recibido el update correspondiente a mi request, reenviar mi request */
+		if (vecino->requests != NULL && (vecino->way == EXCHANGE || vecino->way == LOADING)) {
+			elapsed = timespec_diff (vecino->dd_last_sent_time, now);
+			
+			if (elapsed.tv_sec >= /* Retransmit interval */ 10) {
+				ospf_send_req (miniospf, ospf_link, vecino);
+			}
 		}
 	}
 	
