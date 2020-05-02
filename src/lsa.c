@@ -37,6 +37,9 @@ void lsa_populate_router (OSPFMini *miniospf) {
 	printf ("Llamando Populate LSA\n");
 	lsa = &miniospf->router_lsa;
 	
+	/* Es mas fácil eliminar todos los LSA, y reconstruirlos todos */
+	lsa->router.n_links = 0;
+	
 	if (miniospf->dummy_iface != NULL) {
 		/* Recorrer cada IP del dummy, para agregarlo como stub network */
 		
@@ -45,154 +48,66 @@ void lsa_populate_router (OSPFMini *miniospf) {
 			
 			if (addr->family != AF_INET) continue;
 			
+			/* Agarrar la IP, aplicar la máscara, para sacar la red */
 			netmask = netmask4 (addr->prefix);
 			memcpy (&net_id, &addr->sin_addr.s_addr, sizeof (uint32_t));
 			
 			net_id = net_id & netmask;
 			
-			/* Buscar este net_id dentro del router LSA */
-			found = 0;
+			/* Agregar como stub */
+			h = lsa->router.n_links;
+			lsa->router.links[h].type = LSA_ROUTER_LINK_STUB;
+			memcpy (&lsa->router.links[h].link_id.s_addr, &net_id, sizeof (uint32_t));
+			memcpy (&lsa->router.links[h].data.s_addr, &netmask, sizeof (uint32_t));
 			
-			for (h = 0; h < lsa->router.n_links; h++) {
-				if (lsa->router.links[h].type == LSA_ROUTER_LINK_STUB &&
-				    memcmp (&lsa->router.links[h].link_id.s_addr, &net_id, sizeof (uint32_t)) == 0) {
-					found = 1;
-					break;
-				}
-			}
+			lsa->router.links[h].n_tos = 0;
+			lsa->router.links[h].tos_zero = 10; /* Usar la configuración de miniospf */
 			
-			if (found == 0) {
-				h = lsa->router.n_links;
-				lsa->router.links[h].type = LSA_ROUTER_LINK_STUB;
-				memcpy (&lsa->router.links[h].link_id.s_addr, &net_id, sizeof (uint32_t));
-				memcpy (&lsa->router.links[h].data.s_addr, &netmask, sizeof (uint32_t));
-				
-				lsa->router.links[h].n_tos = 0;
-				lsa->router.links[h].tos_zero = 10; /* Usar la configuración de miniospf */
-				
-				lsa->router.n_links++;
-			}
+			lsa->router.n_links++;
 		}
 	}
 	
 	if (miniospf->iface != NULL && miniospf->iface->main_addr != NULL) {
 		printf ("Armando el LSA, hay OSPF Link\n");
-		/* Agregar la red trásito de al router link */
+		/* Agregar la red trásito hacia el router link */
 		memset (&empty.s_addr, 0, sizeof (empty.s_addr));
 		has_designated = 0;
 		
 		if (memcmp (&miniospf->iface->designated.s_addr, &empty.s_addr, sizeof (uint32_t)) != 0) has_designated = 1;
 		
 		if (has_designated) {
-			/* Buscar el transit, y eliminar el stub si existe */
-			found = -1;
-			for (h = 0; h < lsa->router.n_links; h++) {
-				if (lsa->router.links[h].type == LSA_ROUTER_LINK_TRANSIT &&
-				    memcmp (&miniospf->iface->main_addr->sin_addr.s_addr, &lsa->router.links[h].data.s_addr, sizeof (uint32_t)) == 0) {
-					found = h;
-					printf ("El link transit del router lsa existe\n");
-					break;
-				}
-			}
+			/* Crear el transit */
+			h = lsa->router.n_links;
 			
-			if (found == -1) {
-				/* Crear el transit */
-				h = lsa->router.n_links;
-				
-				lsa->router.links[h].type = LSA_ROUTER_LINK_TRANSIT;
-				memcpy (&lsa->router.links[h].link_id.s_addr, &miniospf->iface->designated.s_addr, sizeof (uint32_t));
-				memcpy (&lsa->router.links[h].data.s_addr, &miniospf->iface->main_addr->sin_addr.s_addr, sizeof (uint32_t));
-				
-				lsa->router.links[h].n_tos = 0;
-				lsa->router.links[h].tos_zero = 10; /* Usar la configuración de miniospf */
-				
-				lsa->router.n_links++;
-			} else {
-				memcpy (&lsa->router.links[found].link_id.s_addr, &miniospf->iface->designated.s_addr, sizeof (uint32_t));
-			}
+			lsa->router.links[h].type = LSA_ROUTER_LINK_TRANSIT;
+			memcpy (&lsa->router.links[h].link_id.s_addr, &miniospf->iface->designated.s_addr, sizeof (uint32_t));
+			memcpy (&lsa->router.links[h].data.s_addr, &miniospf->iface->main_addr->sin_addr.s_addr, sizeof (uint32_t));
 			
-			netmask = netmask4 (miniospf->iface->main_addr->prefix);
-			memcpy (&net_id, &miniospf->iface->main_addr->sin_addr.s_addr, sizeof (uint32_t));
+			lsa->router.links[h].n_tos = 0;
+			lsa->router.links[h].tos_zero = 10; /* Usar la configuración de miniospf */
 			
-			net_id = net_id & netmask;
-			
-			/* Buscar el stub, si existe */
-			found = -1;
-			for (h = 0; h < lsa->router.n_links; h++) {
-				if (lsa->router.links[h].type == LSA_ROUTER_LINK_STUB &&
-				    memcmp (&net_id, &lsa->router.links[h].link_id.s_addr, sizeof (uint32_t)) == 0) {
-					found = h;
-					printf ("El stub link del router lsa existe, procediendo a eliminar\n");
-					break;
-				}
-			}
-			
-			if (found != -1) {
-				if (found + 1 == lsa->router.n_links) {
-					/* Es el último elemento, simplemente decrementar el contador */
-					lsa->router.n_links--;
-				} else {
-					/* Recorrer los elementos */
-					for (h = found; h < lsa->router.n_links - 1; h++) {
-						lsa->router.links[h] = lsa->router.links[h + 1];
-					}
-				}
-			}
+			lsa->router.n_links++;
 		} else {
-			/* Caso contrario, buscar el transit y eliminar si existe. Luego crear el stub link */
-			found = -1;
-			for (h = 0; h < lsa->router.n_links; h++) {
-				if (lsa->router.links[h].type == LSA_ROUTER_LINK_TRANSIT &&
-				    memcmp (&miniospf->iface->main_addr->sin_addr.s_addr, &lsa->router.links[h].data.s_addr, sizeof (uint32_t)) == 0) {
-					found = h;
-					printf ("El link transit del router lsa existe, procediendo a eliminar\n");
-					break;
-				}
-			}
-			
-			if (found != -1) {
-				if (found + 1 == lsa->router.n_links) {
-					/* Es el último elemento, simplemente decrementar el contador */
-					lsa->router.n_links--;
-				} else {
-					/* Recorrer los elementos */
-					for (h = found; h < lsa->router.n_links - 1; h++) {
-						lsa->router.links[h] = lsa->router.links[h + 1];
-					}
-				}
-			}
-			
 			netmask = netmask4 (miniospf->iface->main_addr->prefix);
 			memcpy (&net_id, &miniospf->iface->main_addr->sin_addr.s_addr, sizeof (uint32_t));
 			
 			net_id = net_id & netmask;
 			
-			/* Buscar el stub o crearlo */
-			found = -1;
-			for (h = 0; h < lsa->router.n_links; h++) {
-				if (lsa->router.links[h].type == LSA_ROUTER_LINK_STUB &&
-				    memcmp (&net_id, &lsa->router.links[h].link_id.s_addr, sizeof (uint32_t)) == 0) {
-					found = h;
-					printf ("El stub link del router lsa existe, ya no se crea\n");
-					break;
-				}
-			}
+			/* Crear el stub */
+			h = lsa->router.n_links;
 			
-			if (found == 0) {
-				/* Crear el stub */
-				h = lsa->router.n_links;
-				
-				lsa->router.links[h].type = LSA_ROUTER_LINK_STUB;
-				memcpy (&lsa->router.links[h].link_id.s_addr, &net_id, sizeof (uint32_t));
-				memcpy (&lsa->router.links[h].data.s_addr, &netmask, sizeof (uint32_t));
-				
-				lsa->router.links[h].n_tos = 0;
-				lsa->router.links[h].tos_zero = 10; /* Usar la configuración de miniospf */
-				
-				lsa->router.n_links++;
-			}
+			lsa->router.links[h].type = LSA_ROUTER_LINK_STUB;
+			memcpy (&lsa->router.links[h].link_id.s_addr, &net_id, sizeof (uint32_t));
+			memcpy (&lsa->router.links[h].data.s_addr, &netmask, sizeof (uint32_t));
+			
+			lsa->router.links[h].n_tos = 0;
+			lsa->router.links[h].tos_zero = 10; /* Usar la configuración de miniospf */
+			
+			lsa->router.n_links++;
 		}
 	}
+	
+	/* TODO: Ordernar los router link, ¿por...? */
 }
 
 int lsa_write_lsa (unsigned char *buffer, LSA *lsa) {

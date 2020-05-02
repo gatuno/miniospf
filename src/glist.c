@@ -478,7 +478,7 @@ _g_list_remove_link (GList *list,
     {
       if (link->prev->next == link)
         link->prev->next = link->next;
-      //else
+      else
         printf ("corrupted double-linked list detected");
     }
   if (link->next)

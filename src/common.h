@@ -142,12 +142,23 @@ typedef struct _Interface {
 	GList *address;
 } Interface;
 
+typedef void (*InterfaceCB) (Interface *, void *);
+typedef void (*IPAddressCB) (Interface *, IPAddr *, void *);
+
 typedef struct {
 	GList *interfaces;
 	
 	struct nl_sock * nl_sock_route;
 	struct nl_sock * nl_sock_route_events;
 	int fd_sock_route_events;
+	
+	InterfaceCB interface_added_cb;
+	InterfaceCB interface_deleted_cb;
+	
+	IPAddressCB ip_address_added_cb;
+	IPAddressCB ip_address_deleted_cb;
+	
+	void *cb_arg;
 } NetworkWatcher;
 
 enum {

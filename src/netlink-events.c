@@ -71,6 +71,26 @@ void netlink_events_setup (NetworkWatcher *handle) {
 	handle->nl_sock_route_events = sock_req;
 }
 
+void netlink_events_interface_added_func (NetworkWatcher *handler, InterfaceCB cb) {
+	handler->interface_added_cb = cb;
+}
+
+void netlink_events_interface_deleted_func (NetworkWatcher *handler, InterfaceCB cb) {
+	handler->interface_deleted_cb = cb;
+}
+
+void netlink_events_ip_address_added_func (NetworkWatcher *handler, IPAddressCB cb) {
+	handler->ip_address_added_cb = cb;
+}
+
+void netlink_events_ip_address_deleted_func (NetworkWatcher *handler, IPAddressCB cb) {
+	handler->ip_address_deleted_cb = cb;
+}
+
+void netlink_events_ip_address_arg (NetworkWatcher *handler, void *arg) {
+	handler->cb_arg = arg;
+}
+
 void netlink_events_clear (NetworkWatcher *handle) {
 	/* Primero, detener los eventos del source watch */
 	

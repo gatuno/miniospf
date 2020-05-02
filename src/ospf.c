@@ -1140,7 +1140,6 @@ void ospf_send_hello (OSPFMini *miniospf) {
 	ospf_fill_header (1, buffer, &miniospf->router_id, ospf_link->area);
 	pos = 24;
 	
-	
 	netmask = htonl (netmask4 (ospf_link->main_addr->prefix));
 	memcpy (&buffer[pos], &netmask, sizeof (uint32_t));
 	pos = pos + 4;

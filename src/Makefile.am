@@ -10,7 +10,8 @@ miniospf_SOURCES = miniospf.c common.h \
 	netlink-events.c netlink-events.h \
 	utils.c utils.h \
 	lsa.c lsa.h \
-	ospf.c ospf.h
+	ospf.c ospf.h \
+	ospf-changes.c ospf-changes.h
 
 
 miniospf_CPPFLAGS = -DSHAREDATA_DIR=\"$(sharedatadir)/\" -DLOCALEDIR=\"$(localedir)\" $(AM_CPPFLAGS)

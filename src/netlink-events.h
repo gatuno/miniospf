@@ -28,4 +28,10 @@
 void netlink_events_setup (NetworkWatcher *handle);
 void netlink_events_clear (NetworkWatcher *handle);
 
+void netlink_events_interface_added_func (NetworkWatcher *handler, InterfaceCB cb);
+void netlink_events_interface_deleted_func (NetworkWatcher *handler, InterfaceCB cb);
+void netlink_events_ip_address_added_func (NetworkWatcher *handler, IPAddressCB cb);
+void netlink_events_ip_address_deleted_func (NetworkWatcher *handler, IPAddressCB cb);
+void netlink_events_ip_address_arg (NetworkWatcher *handler, void *arg);
+
 #endif

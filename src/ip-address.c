@@ -31,6 +31,7 @@
 #include "common.h"
 #include "ip-address.h"
 #include "interfaces.h"
+#include "ospf-changes.h"
 
 static IPAddr *_ip_address_search_addr (Interface *iface, sa_family_t family, void *addr_data, uint32_t prefix) {
 	GList *g;
@@ -51,7 +52,17 @@ static IPAddr *_ip_address_search_addr (Interface *iface, sa_family_t family, vo
 	return NULL;
 }
 
+static int _ip_address_receive_message_address (struct nl_msg *msg, void *arg, int first_time);
+
+static int _ip_address_list_first_time (struct nl_msg *msg, void *arg) {
+	return _ip_address_receive_message_address (msg, arg, TRUE);
+}
+
 int ip_address_receive_message_newaddr (struct nl_msg *msg, void *arg) {
+	return _ip_address_receive_message_address (msg, arg, FALSE);
+}
+
+static int _ip_address_receive_message_address (struct nl_msg *msg, void *arg, int first_time) {
 	struct nlmsghdr *reply;
 	struct ifaddrmsg *addr_msg;
 	int remaining;
@@ -62,6 +73,7 @@ int ip_address_receive_message_newaddr (struct nl_msg *msg, void *arg) {
 	struct in_addr sin_addr;
 	struct in6_addr sin6_addr;
 	IPAddr *addr;
+	int was_new = 0;
 	
 	reply = nlmsg_hdr (msg);
 	
@@ -72,7 +84,7 @@ int ip_address_receive_message_newaddr (struct nl_msg *msg, void *arg) {
 	iface = _interfaces_locate_by_index (handle->interfaces, addr_msg->ifa_index);
 	
 	if (iface == NULL) {
-		printf ("IP para una interfaz desconocida\n");
+		//printf ("IP para una interfaz desconocida\n");
 		return NL_SKIP;
 	}
 	
@@ -110,14 +122,21 @@ int ip_address_receive_message_newaddr (struct nl_msg *msg, void *arg) {
 		}
 		
 		addr->prefix = addr_msg->ifa_prefixlen;
+		was_new = 1;
 	}
 	
 	char buffer[2048];
 	inet_ntop (addr->family, &addr->sin_addr, buffer, sizeof (buffer));
-	printf ("Dirección IP %s/%d sobre interfaz: %d\n", buffer, addr->prefix, iface->index);
+	//printf ("Dirección IP %s/%d sobre interfaz: %d\n", buffer, addr->prefix, iface->index);
 	
 	addr->flags = addr_msg->ifa_flags;
 	addr->scope = addr_msg->ifa_scope;
+	
+	if (first_time == FALSE && was_new == 1) {
+		if (handle->ip_address_added_cb != NULL) {
+			handle->ip_address_added_cb (iface, addr, handle->cb_arg);
+		}
+	}
 	
 	return NL_SKIP;
 }
@@ -142,7 +161,7 @@ int ip_address_receive_message_deladdr (struct nl_msg *msg, void *arg) {
 	iface = _interfaces_locate_by_index (handle->interfaces, addr_msg->ifa_index);
 	
 	if (iface == NULL) {
-		printf ("IP para una interfaz desconocida\n");
+		//printf ("IP para una interfaz desconocida\n");
 		return NL_SKIP;
 	}
 	
@@ -166,12 +185,16 @@ int ip_address_receive_message_deladdr (struct nl_msg *msg, void *arg) {
 	}
 	
 	if (addr == NULL) {
-		printf ("IP no encontrada\n");
+		//printf ("IP no encontrada\n");
 		return NL_SKIP;
 	}
 	
 	/* Eliminar de la lista ligada */
 	iface->address = g_list_remove (iface->address, addr);
+	
+	if (handle->ip_address_deleted_cb != NULL) {
+		handle->ip_address_deleted_cb (iface, addr, handle->cb_arg);
+	}
 	
 	free (addr);
 	
@@ -223,7 +246,7 @@ void ip_address_init (NetworkWatcher *handle) {
 	
 	nlmsg_free (msg);
 	
-	nl_socket_modify_cb (handle->nl_sock_route, NL_CB_VALID, NL_CB_CUSTOM, ip_address_receive_message_newaddr, handle);
+	nl_socket_modify_cb (handle->nl_sock_route, NL_CB_VALID, NL_CB_CUSTOM, _ip_address_list_first_time, handle);
 	
 	nl_recvmsgs_default (handle->nl_sock_route);
 }

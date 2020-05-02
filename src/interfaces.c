@@ -30,6 +30,7 @@
 #include "common.h"
 #include "interfaces.h"
 #include "ip-address.h"
+#include "ospf-changes.h"
 
 static int _interfaces_receive_message_interface (struct nl_msg *msg, void *arg, int first_time);
 
@@ -143,6 +144,13 @@ static int _interfaces_receive_message_interface (struct nl_msg *msg, void *arg,
 		}
 	}
 	
+	if (first_time == FALSE && was_new == 1) {
+		/* Disparar el evento de "interfaz creada" */
+		if (handle->interface_added_cb != NULL) {
+			handle->interface_added_cb (iface, handle->cb_arg);
+		}
+	}
+	
 	return NL_SKIP;
 }
 
@@ -232,10 +240,16 @@ int interface_receive_message_dellink (struct nl_msg *msg, void *arg) {
 	
 	handle->interfaces = g_list_remove (handle->interfaces, iface);
 	
+	if (handle->interface_deleted_cb != NULL) {
+		handle->interface_deleted_cb (iface, handle->cb_arg);
+	}
+	
 	/* Antes de eliminar la interfaz, eliminar la lista ligada de todas las direcciones IP */
 	g_list_free_full (iface->address, free);
 	
 	free (iface);
+	
+	return NL_SKIP;
 }
 
 void interfaces_init (NetworkWatcher *handle) {

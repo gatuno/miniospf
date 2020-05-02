@@ -24,6 +24,7 @@
 #include "ospf.h"
 #include "utils.h"
 #include "lsa.h"
+#include "ospf-changes.h"
 
 #define ALL_OSPF_ROUTERS "224.0.0.5"
 #define ALL_OSPF_DESIGNATED_ROUTERS "224.0.0.6"
@@ -39,6 +40,8 @@ NetworkWatcher *init_network_watcher (void) {
 	if (watcher == NULL) {
 		return NULL;
 	}
+	
+	memset (watcher, 0, sizeof (NetworkWatcher));
 	
 	watcher->interfaces = NULL;
 
@@ -217,6 +220,13 @@ void main_loop (OSPFMini *miniospf) {
 		ospf_send_hello (miniospf);
 	}
 	
+	/* Instalar los eventos de la red */
+	netlink_events_interface_added_func (miniospf->watcher, (InterfaceCB) ospf_change_interface_add);
+	netlink_events_interface_deleted_func (miniospf->watcher, (InterfaceCB) ospf_change_interface_delete);
+	netlink_events_ip_address_added_func (miniospf->watcher, (IPAddressCB) ospf_change_address_add);
+	netlink_events_ip_address_deleted_func (miniospf->watcher, (IPAddressCB) ospf_change_address_delete);
+	netlink_events_ip_address_arg (miniospf->watcher, miniospf);
+	
 	do {
 		res = poll (poller, poller_count, 50);
 		
@@ -230,6 +240,10 @@ void main_loop (OSPFMini *miniospf) {
 			poller[0].revents = 0;
 		}
 		
+		/* Si después de procesar los eventos de red,
+		 * nuestra interfaz de red activa despareció,
+		 * cerrar el loop */
+		
 		start = 1;
 		if (has_term_pipe) {
 			start = 2;
@@ -238,6 +252,8 @@ void main_loop (OSPFMini *miniospf) {
 				break;
 			}
 		}
+		
+		/* TODO: Revisar el estado del OPSF Link para evitar iterar sobre él */
 		
 		/* Revisar el socket aquí */
 		if (poller[start].revents != 0) {
