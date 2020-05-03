@@ -60,6 +60,22 @@ enum {
 	LSA_EXTERNAL = 5
 };
 
+enum {
+	OSPF_AREA_STANDARD = 0,
+	OSPF_AREA_STUB,
+	OSPF_AREA_NSSA
+};
+
+/* Estados de los vecinos */
+enum {
+	ONE_WAY = 0,
+	TWO_WAY,
+	EX_START,
+	EXCHANGE,
+	LOADING,
+	FULL
+};
+
 typedef struct {
 	struct in_addr link_id;
 	struct in_addr data;
@@ -74,8 +90,6 @@ typedef struct {
 } LSARouterLink;
 
 typedef struct {
-	uint8_t options;
-	//uint16_t len;
 	uint8_t flags;
 	
 	uint16_t n_links;
@@ -161,15 +175,6 @@ typedef struct {
 	void *cb_arg;
 } NetworkWatcher;
 
-enum {
-	ONE_WAY = 0,
-	TWO_WAY,
-	EX_START,
-	EXCHANGE,
-	LOADING,
-	FULL
-};
-
 struct ospf_packet {
 	/* Pointer to data stream. */
 	unsigned char buffer[2048];
@@ -220,9 +225,11 @@ typedef struct {
 	int has_nonblocking;
 	
 	uint32_t area;
+	uint8_t area_type;
 	
 	uint16_t hello_interval;
 	uint32_t dead_router_interval;
+	int cost;
 	
 	GList *neighbors;
 	struct in_addr designated;
@@ -233,12 +240,26 @@ typedef struct {
 } OSPFLink;
 
 typedef struct {
+	struct in_addr router_id;
+	
+	uint32_t area_id;
+	uint8_t area_type;
+	
+	char active_interface_name[IFNAMSIZ];
+	char dummy_interface_name[IFNAMSIZ];
+	
+	uint16_t hello_interval;
+	uint32_t dead_router_interval;
+	
+	int cost;
+} OSPFConfig;
+
+typedef struct {
 	NetworkWatcher *watcher;
+	OSPFConfig config;
 	
 	struct sockaddr_in all_ospf_routers_addr;
 	struct sockaddr_in all_ospf_designated_addr;
-	
-	struct in_addr router_id;
 	
 	OSPFLink *iface;
 	
@@ -248,8 +269,8 @@ typedef struct {
 } OSPFMini;
 
 typedef struct {
-	unsigned char version;
-	unsigned char type;
+	uint8_t version;
+	uint8_t type;
 	uint16_t len;
 	struct in_addr router_id;
 	uint32_t area;
@@ -265,7 +286,7 @@ typedef struct {
 typedef struct {
 	struct in_addr netmask;
 	uint16_t hello_interval;
-	unsigned char options;
+	uint8_t options;
 	uint8_t priority;
 	
 	uint32_t dead_router_interval;

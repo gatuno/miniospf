@@ -74,10 +74,10 @@ static int _interfaces_receive_message_interface (struct nl_msg *msg, void *arg,
 		return NL_SKIP;
 	}
 	
-	printf ("Interface %d ifi_type: %d\n", iface_msg->ifi_index, iface_msg->ifi_type);
+	//printf ("Interface %d ifi_type: %d\n", iface_msg->ifi_index, iface_msg->ifi_type);
 	iface->ifi_type = iface_msg->ifi_type;
 	/* TODO: Checar aquí cambio de flags */
-	printf ("Interface %d ifi_flags: %d\n", iface_msg->ifi_index, iface_msg->ifi_flags);
+	//printf ("Interface %d ifi_flags: %d\n", iface_msg->ifi_index, iface_msg->ifi_flags);
 	iface->flags = iface_msg->ifi_flags;
 	iface->index = iface_msg->ifi_index;
 	
@@ -90,14 +90,14 @@ static int _interfaces_receive_message_interface (struct nl_msg *msg, void *arg,
 		switch (nla_type (attr)) {
 			//nla_len (Attr);
 			case IFLA_IFNAME: 
-				printf ("Interface %d : %s\n", iface_msg->ifi_index, (char *) nla_data (attr));
+				//printf ("Interface %d : %s\n", iface_msg->ifi_index, (char *) nla_data (attr));
 				// Actualizar el nombre de la interfaz */
 				/* TODO Revisar cambio de nombre aquí y generar evento */
 				strncpy (iface->name, nla_data (attr), IFNAMSIZ);
 				break;
 			case IFLA_ADDRESS:
 				if (nla_len (attr) > ETHER_ADDR_LEN) {
-					printf ("----- Warning, address es mayor que ETHER_ADDR_LEN\n");
+					//printf ("----- Warning, address es mayor que ETHER_ADDR_LEN\n");
 					continue;
 				}
 				memcpy (iface->real_hw, nla_data (attr), nla_len (attr));
@@ -123,7 +123,7 @@ static int _interfaces_receive_message_interface (struct nl_msg *msg, void *arg,
 					nla_for_each_nested(sub_attr, attr, sub_remaining) {
 						switch (nla_type (sub_attr)) {
 							case IFLA_INFO_KIND:
-								printf ("IFLA_INFO_KIND: %s\n", nla_data (sub_attr));
+								//printf ("IFLA_INFO_KIND: %s\n", nla_data (sub_attr));
 								if (strcmp (nla_data (sub_attr), "vlan") == 0) {
 									iface->is_vlan = 1;
 									
@@ -228,7 +228,7 @@ int interface_receive_message_dellink (struct nl_msg *msg, void *arg) {
 	iface = _interfaces_locate_by_index (handle->interfaces, iface_msg->ifi_index);
 	
 	if (iface == NULL) {
-		printf ("Error, solicitaron eliminar interfaz que ya no existe\n");
+		//printf ("Error, solicitaron eliminar interfaz que ya no existe\n");
 		
 		return NL_SKIP;
 	}

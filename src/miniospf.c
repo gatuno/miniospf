@@ -16,6 +16,7 @@
 #include <arpa/inet.h>
 
 #include <netinet/ip.h>
+#include <getopt.h>
 
 #include "netlink-events.h"
 #include "interfaces.h"
@@ -305,10 +306,186 @@ void main_loop (OSPFMini *miniospf) {
 	ospf_send_update_router_link (miniospf);
 }
 
-int main (int argc, char *argv) {
+void print_usage (FILE* stream, int exit_code, const char *program_name) {
+	fprintf (stream, "Usage:  %s options\n", program_name);
+	fprintf (stream,
+		"  -h  --help                          Display this usage information.\n"
+		"  -i  --active-interface  iface_name  Use this interface as active OSPF interface.\n"
+		"  -p  --passive-interface iface_name  Use this interface as passive OSPF interface.\n"
+		"  -r  --router-id router_id           Specify IP address as Router ID.\n"
+		"  -e  --hello interval                Use 'interval' seconds for sending hellos.\n"
+		"  -d  --router-dead interval          Use 'interval' seconds as Router Dead Interval.\n"
+		"  -a  --area area_id                  Area ID for active interface.\n"
+		"  -t  --area-type {standard | stub | nssa}   Config area type.\n"
+		"  -c  --cost value                    Interface cost.\n"
+	);
+	
+	exit (exit_code);
+}
+
+void _parse_cmd_line_args (OSPFConfig *config, int argc, char **argv) {
+	int next_option;
+	const char *program_name = argv[0];
+	struct in_addr ip;
+	int ret, value;
+	
+	const char* const short_options = "hi:p:r:e:a:t:d:c:";
+	const struct option long_options[] = {
+		{ "help", 0, NULL, 'h' },
+		{ "active-interface", 1, NULL, 'i' },
+		{ "passive-interface", 1, NULL, 'p' },
+		{ "router-id", 1, NULL, 'r' },
+		{ "hello", 1, NULL, 'e' },
+		{ "router-dead", 1, NULL, 'd' },
+		{ "area", 1, NULL, 'a' },
+		{ "area-type", 1, NULL, 't' },
+		{ "cost", 1, NULL, 'c' },
+		{ NULL, 0, NULL, 0 },
+	};
+	
+	do {
+		next_option = getopt_long (argc, argv, short_options, long_options, NULL);
+		
+		switch (next_option) {
+			case 'h':
+				print_usage (stdout, 0, program_name);
+				break;
+			case 'i':
+				/* Copiar el nombre de la interfaz activa */
+				strncpy (config->active_interface_name, optarg, sizeof (config->active_interface_name));
+				break;
+			case 'p':
+				/* Copiar el nombre de la interfaz activa */
+				strncpy (config->dummy_interface_name, optarg, sizeof (config->dummy_interface_name));
+				break;
+			case 'r':
+				/* Intentar parsear el router ID */
+				ret = inet_pton (AF_INET, optarg, &ip);
+				
+				if (ret > 0) {
+					/* Tenemos un router id válido */
+					memcpy (&config->router_id, &ip, sizeof (uint32_t));
+				} else {
+					print_usage (stderr, 1, program_name);
+				}
+				break;
+			case 'a':
+				/* Intentar parsear el AREA ID */
+				ret = inet_pton (AF_INET, optarg, &ip);
+				
+				if (ret > 0) {
+					/* Tenemos un router id válido */
+					memcpy (&config->area_id, &ip, sizeof (uint32_t));
+				} else {
+					print_usage (stderr, 1, program_name);
+				}
+				break;
+			case 't':
+				if (strcmp (optarg, "standard") == 0) {
+					config->area_type = OSPF_AREA_STANDARD;
+				} else if (strcmp (optarg, "stub") == 0) {
+					config->area_type = OSPF_AREA_STUB;
+				} else if (strcmp (optarg, "nssa") == 0) {
+					config->area_type = OSPF_AREA_NSSA;
+				} else {
+					print_usage (stderr, 1, program_name);
+				}
+				break;
+			case 'e':
+				ret = sscanf (optarg, "%d", &value);
+				
+				if (ret > 0) {
+					config->hello_interval = value;
+				} else {
+					print_usage (stderr, 1, program_name);
+				}
+				break;
+			case 'd':
+				ret = sscanf (optarg, "%d", &value);
+				
+				if (ret > 0) {
+					config->dead_router_interval = value;
+				} else {
+					print_usage (stderr, 1, program_name);
+				}
+				break;
+			case 'c':
+				ret = sscanf (optarg, "%d", &value);
+				
+				if (ret > 0) {
+					config->cost = value;
+				} else {
+					print_usage (stderr, 1, program_name);
+				}
+				break;
+			case '?':
+				print_usage (stderr, 1, program_name);
+				break;
+			case -1:
+				break;
+		}
+	} while (next_option != -1);
+}
+
+void choose_best_router_id (OSPFConfig *config, Interface *activa, Interface *pasiva) {
+	struct in_addr best;
+	IPAddr *ip;
+	GList *g;
+	int first = 1;
+	
+	memset (&best, 0, sizeof (best));
+	
+	g = activa->address;
+	while (g != NULL) {
+		ip = (IPAddr *) g->data;
+		
+		if (ip->family != AF_INET) {
+			g = g->next;
+			continue;
+		}
+		
+		if (first == 1) {
+			memcpy (&best, &ip->sin_addr, sizeof (best));
+			first = 0;
+		} else {
+			if (memcmp (&ip->sin_addr, &best, sizeof (uint32_t)) < 0) {
+				/* Esta ip es menor */
+				memcpy (&best, &ip->sin_addr, sizeof (best));
+			}
+		}
+		g = g->next;
+	}
+	
+	if (pasiva != NULL) {
+		g = pasiva->address;
+		while (g != NULL) {
+			ip = (IPAddr *) g->data;
+		
+			if (ip->family != AF_INET) {
+				g = g->next;
+				continue;
+			}
+		
+			if (first == 1) {
+				memcpy (&best, &ip->sin_addr, sizeof (best));
+				first = 0;
+			} else {
+				if (memcmp (&ip->sin_addr, &best, sizeof (uint32_t)) < 0) {
+					/* Esta ip es menor */
+					memcpy (&best, &ip->sin_addr, sizeof (best));
+				}
+			}
+			g = g->next;
+		}
+	}
+	
+	memcpy (&config->router_id, &best, sizeof (uint32_t));
+}
+
+int main (int argc, char *argv[]) {
 	OSPFMini miniospf;
 	Interface *iface_activa, *pasiva;
-	struct in_addr router_id;
+	struct in_addr router_id_zero;
 	
 	memset (&miniospf, 0, sizeof (miniospf));
 	miniospf.watcher = init_network_watcher ();
@@ -317,21 +494,35 @@ int main (int argc, char *argv) {
 		return 1;
 	}
 	
-	/* Localizar las interfaces necesarias */
-	iface_activa = _interfaces_locate_by_name (miniospf.watcher->interfaces, "eth1");
+	miniospf.config.hello_interval = 10;
+	miniospf.config.dead_router_interval = 40;
+	miniospf.config.cost = 10;
 	
-	if (iface_activa == NULL) {
-		printf ("Interfaz %s not found\n", "eth1");
-		
-		return 2;
+	_parse_cmd_line_args (&miniospf.config, argc, argv);
+	
+	if (miniospf.config.active_interface_name[0] == 0) {
+		/* No hay interfaz activa, cerrar */
+		fprintf (stderr, "Active interface not specified\n");
+		print_usage (stderr, 1, argv[0]);
 	}
 	
-	pasiva = _interfaces_locate_by_name (miniospf.watcher->interfaces, "dummy0");
+	/* Localizar las interfaces necesarias */
+	iface_activa = _interfaces_locate_by_name (miniospf.watcher->interfaces, miniospf.config.active_interface_name);
 	
-	if (pasiva == NULL) {
-		printf ("Interfaz %s not found\n", "dummy0");
+	if (iface_activa == NULL) {
+		fprintf (stderr, "Interfaz %s not found\n", miniospf.config.active_interface_name);
 		
-		return 4;
+		return 1;
+	}
+	
+	if (miniospf.config.dummy_interface_name[0] != 0) {
+		pasiva = _interfaces_locate_by_name (miniospf.watcher->interfaces, miniospf.config.dummy_interface_name);
+		
+		if (pasiva == NULL) {
+			fprintf (stderr, "Interfaz %s not found\n", miniospf.config.dummy_interface_name);
+			
+			return 1;
+		}
 	}
 	
 	/* Activar el manejador de la señal */
@@ -350,23 +541,38 @@ int main (int argc, char *argv) {
 	miniospf.all_ospf_designated_addr.sin_family = AF_INET;
 	
 	/* Router ID */
-	char *router_id_str = "172.22.200.7";
-	inet_pton (AF_INET, router_id_str, &router_id.s_addr);
+	memset (&router_id_zero, 0, sizeof (router_id_zero));
+	if (memcmp (&router_id_zero, &miniospf.config.router_id, sizeof (uint32_t)) == 0) {
+		/* Nuestro router id está en 0, seleccionar la menor IP basado en las interfaces */
+		choose_best_router_id (&miniospf.config, iface_activa, pasiva);
+	}
 	
-	ospf_configure_router_id (&miniospf, router_id);
+	/* Si después de la selección, el router ID sigue en cero, tenemos un problema */
+	if (memcmp (&router_id_zero, &miniospf.config.router_id, sizeof (uint32_t)) == 0) {
+		fprintf (stderr, "Could not choose a valid Router ID\n");
+		
+		return 1;
+	}
 	
-	/* La area a la que pertenece esta interfaz */
-	char *area_id_str = "0.0.0.0";
-	struct in_addr area_id;
-	inet_pton (AF_INET, area_id_str, &area_id.s_addr);
+	ospf_configure_router_id (&miniospf);
+	
+	/* Validar el área, el area 0.0.0.0 no puede ser stub */
+	memset (&router_id_zero, 0, sizeof (router_id_zero));
+	if (memcmp (&router_id_zero, &miniospf.config.area_id, sizeof (uint32_t)) == 0 &&
+	    miniospf.config.area_type != OSPF_AREA_STANDARD) {
+		fprintf (stderr, "Backbone area 0.0.0.0 can't be STUB or NSSA\n");
+		
+		return 1;
+	}
 	
 	/* Crear la interfaz ospf de datos */
-	miniospf.iface = ospf_create_iface (&miniospf, iface_activa, area_id);
+	miniospf.iface = ospf_create_iface (&miniospf, iface_activa);
 	if (miniospf.iface == NULL) {
-		printf ("Error\n");
+		fprintf (stderr, "Error\n");
 		
-		return 3;
+		return 1;
 	}
+	
 	miniospf.dummy_iface = pasiva;
 	
 	//lsa_update_router_lsa (&miniospf);
@@ -375,3 +581,4 @@ int main (int argc, char *argv) {
 	
 	/* Aquí hacer limpieza */
 }
+

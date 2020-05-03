@@ -61,7 +61,7 @@ void lsa_populate_router (OSPFMini *miniospf) {
 			memcpy (&lsa->router.links[h].data.s_addr, &netmask, sizeof (uint32_t));
 			
 			lsa->router.links[h].n_tos = 0;
-			lsa->router.links[h].tos_zero = 10; /* Usar la configuración de miniospf */
+			lsa->router.links[h].tos_zero = miniospf->config.cost;
 			
 			lsa->router.n_links++;
 		}
@@ -84,7 +84,7 @@ void lsa_populate_router (OSPFMini *miniospf) {
 			memcpy (&lsa->router.links[h].data.s_addr, &miniospf->iface->main_addr->sin_addr.s_addr, sizeof (uint32_t));
 			
 			lsa->router.links[h].n_tos = 0;
-			lsa->router.links[h].tos_zero = 10; /* Usar la configuración de miniospf */
+			lsa->router.links[h].tos_zero = miniospf->config.cost;
 			
 			lsa->router.n_links++;
 		} else {
@@ -101,7 +101,7 @@ void lsa_populate_router (OSPFMini *miniospf) {
 			memcpy (&lsa->router.links[h].data.s_addr, &netmask, sizeof (uint32_t));
 			
 			lsa->router.links[h].n_tos = 0;
-			lsa->router.links[h].tos_zero = 10; /* Usar la configuración de miniospf */
+			lsa->router.links[h].tos_zero = miniospf->config.cost;
 			
 			lsa->router.n_links++;
 		}
@@ -122,7 +122,7 @@ int lsa_write_lsa (unsigned char *buffer, LSA *lsa) {
 	memcpy (&buffer[pos], &t16, sizeof (uint16_t));
 	pos += 2;
 	
-	buffer[pos++] = 0x02;
+	buffer[pos++] = lsa->options;
 	buffer[pos++] = lsa->type;
 	
 	memcpy (&buffer[pos], &lsa->link_state_id.s_addr, sizeof (uint32_t));
@@ -144,7 +144,7 @@ int lsa_write_lsa (unsigned char *buffer, LSA *lsa) {
 	pos_len = pos;
 	pos += 2;
 	
-	buffer[pos++] = 0x02;
+	buffer[pos++] = lsa->router.flags;
 	
 	buffer[pos++] = 0;
 	
@@ -237,8 +237,8 @@ void lsa_finish_lsa_info (LSA *lsa) {
 void lsa_update_router_lsa (OSPFMini *miniospf) {
 	struct timespec now;
 	
-	memcpy (&miniospf->router_lsa.link_state_id.s_addr, &miniospf->router_id.s_addr, sizeof (uint32_t));
-	memcpy (&miniospf->router_lsa.advert_router.s_addr, &miniospf->router_id.s_addr, sizeof (uint32_t));
+	memcpy (&miniospf->router_lsa.link_state_id.s_addr, &miniospf->config.router_id.s_addr, sizeof (uint32_t));
+	memcpy (&miniospf->router_lsa.advert_router.s_addr, &miniospf->config.router_id.s_addr, sizeof (uint32_t));
 	
 	lsa_populate_router (miniospf);
 	
@@ -256,14 +256,26 @@ void lsa_init_router_lsa (OSPFMini *miniospf) {
 	memset (&miniospf->router_lsa, 0, sizeof (miniospf->router_lsa));
 	
 	miniospf->router_lsa.type = LSA_ROUTER;
-	miniospf->router_lsa.options = 0x02;
 	
-	memcpy (&miniospf->router_lsa.link_state_id.s_addr, &miniospf->router_id.s_addr, sizeof (uint32_t));
-	memcpy (&miniospf->router_lsa.advert_router.s_addr, &miniospf->router_id.s_addr, sizeof (uint32_t));
+	if (miniospf->config.area_type == OSPF_AREA_STANDARD) {
+		miniospf->router_lsa.options = 0x02;
+	} else if (miniospf->config.area_type == OSPF_AREA_STUB) {
+		miniospf->router_lsa.options = 0x00;
+	} else if (miniospf->config.area_type == OSPF_AREA_NSSA) {
+		miniospf->router_lsa.options = 0x08;
+	}
+	
+	memcpy (&miniospf->router_lsa.link_state_id.s_addr, &miniospf->config.router_id.s_addr, sizeof (uint32_t));
+	memcpy (&miniospf->router_lsa.advert_router.s_addr, &miniospf->config.router_id.s_addr, sizeof (uint32_t));
 	
 	miniospf->router_lsa.router.n_links = 0;
-	miniospf->router_lsa.router.options = 0x02;
-	miniospf->router_lsa.router.flags = 0x02;
+	if (miniospf->config.area_type == OSPF_AREA_STANDARD) {
+		miniospf->router_lsa.router.flags = 0x02;
+	} else if (miniospf->config.area_type == OSPF_AREA_STUB) {
+		miniospf->router_lsa.router.flags = 0x00;
+	} else if (miniospf->config.area_type == OSPF_AREA_NSSA) {
+		miniospf->router_lsa.router.flags = 0x00;
+	}
 	miniospf->router_lsa.seq_num = OSPF_INITIAL_SEQUENCE_NUMBER + 0;
 	
 	lsa_update_router_lsa (miniospf);

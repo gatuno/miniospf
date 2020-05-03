@@ -34,7 +34,7 @@ IPAddr *locate_first_address (GList *address_list, int family) {
 	return NULL;
 }
 
-OSPFLink *ospf_create_iface (OSPFMini *miniospf, Interface *iface, struct in_addr area_id) {
+OSPFLink *ospf_create_iface (OSPFMini *miniospf, Interface *iface) {
 	OSPFLink *ospf_link;
 	struct ip_mreqn mcast_req;
 	int s;
@@ -107,14 +107,17 @@ OSPFLink *ospf_create_iface (OSPFMini *miniospf, Interface *iface, struct in_add
 		ospf_link->has_nonblocking = 1;
 	}
 	
-	ospf_link->hello_interval = 10;
-	ospf_link->dead_router_interval = 40;
+	ospf_link->hello_interval = miniospf->config.hello_interval;
+	ospf_link->dead_router_interval = miniospf->config.dead_router_interval;
 	
 	ospf_link->neighbors = NULL;
 	memset (&ospf_link->designated, 0, sizeof (ospf_link->designated));
 	memset (&ospf_link->backup, 0, sizeof (ospf_link->backup));
 	
-	memcpy (&ospf_link->area, &area_id, sizeof (area_id));
+	memcpy (&ospf_link->area, &miniospf->config.area_id, sizeof (uint32_t));
+	ospf_link->area_type = miniospf->config.area_type;
+	ospf_link->cost = miniospf->config.cost;
+	
 	ospf_link->iface = iface;
 	
 	ospf_link->state = OSPF_ISM_Down;
@@ -122,25 +125,8 @@ OSPFLink *ospf_create_iface (OSPFMini *miniospf, Interface *iface, struct in_add
 	return ospf_link;
 }
 
-void ospf_configure_router_id (OSPFMini *miniospf, struct in_addr router_id) {
-	struct in_addr empty;
-	int new = 0;
-	/* Cuando se configure el router id, buscar el Router LSA y corregirlo */
-	
-	memset (&empty.s_addr, 0, sizeof (empty.s_addr));
-	
-	if (memcmp (&miniospf->router_id.s_addr, &empty.s_addr, sizeof (uint32_t)) == 0) {
-		/* Eliminar el router LSA */
-		new = 1;
-	}
-	
-	memcpy (&miniospf->router_id.s_addr, &router_id.s_addr, sizeof (uint32_t));
-	
-	if (new) {
-		lsa_init_router_lsa (miniospf);
-	} else {
-		lsa_update_router_lsa (miniospf);
-	}
+void ospf_configure_router_id (OSPFMini *miniospf) {
+	lsa_init_router_lsa (miniospf);
 }
 
 OSPFNeighbor *ospf_locate_neighbor (OSPFLink *ospf_link, struct in_addr *origen) {
@@ -436,7 +422,12 @@ void ospf_process_hello (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFHeader *he
 		return;
 	}
 	
-	/* TODO: Revisar las opciones, sobre todo la opción "E" */
+	if ((ospf_link->area_type == OSPF_AREA_STANDARD && (hello->options & 0x0A) != 0x02) ||
+	    (ospf_link->area_type == OSPF_AREA_STUB && (hello->options & 0x0A) != 0x00) ||
+	    (ospf_link->area_type == OSPF_AREA_NSSA && (hello->options & 0x0A) != 0x08)) {
+		/* No coincidimos en el tipo de área */
+		return;
+	}
 	
 	n_neighbors = (header->len - 44) / 4;
 	neighbors = (struct in_addr *) &header->buffer[20];
@@ -458,7 +449,7 @@ void ospf_process_hello (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFHeader *he
 	
 	/* Recorrer los vecinos, y si estoy listado, cambiar la relación a 2-way si estoy listado */
 	for (g = 0; g < n_neighbors; g++) {
-		if (memcmp (&neighbors[g].s_addr, &miniospf->router_id.s_addr, sizeof (uint32_t)) == 0) {
+		if (memcmp (&neighbors[g].s_addr, &miniospf->config.router_id.s_addr, sizeof (uint32_t)) == 0) {
 			found = 1;
 			break;
 		}
@@ -528,14 +519,21 @@ void ospf_send_dd (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFNeighbor *vecino
 	uint16_t t16;
 	uint32_t t32;
 	
-	ospf_fill_header (2, buffer, &miniospf->router_id, ospf_link->area);
+	ospf_fill_header (2, buffer, &miniospf->config.router_id, ospf_link->area);
 	pos = 24;
 	
 	t16 = htons (ospf_link->iface->mtu);
 	memcpy (&buffer[pos], &t16, sizeof (uint16_t));
 	pos = pos + 2;
 	
-	buffer[pos++] = 0x02; /* External Routing */
+	if (ospf_link->area_type == OSPF_AREA_STANDARD) {
+		buffer[pos++] = 0x02; /* External Routing */
+	} else if (ospf_link->area_type == OSPF_AREA_STUB) {
+		buffer[pos++] = 0x00; /* Las áreas stub no tienen external routing */
+	} else if (ospf_link->area_type == OSPF_AREA_NSSA) {
+		buffer[pos++] = 0x08; /* Las áreas nssa no tienen external pero tienen nssa bit */
+	}
+	
 	pos_flags = pos;
 	buffer[pos++] = vecino->dd_flags;
 	
@@ -586,7 +584,7 @@ void ospf_send_req (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFNeighbor *vecin
 	
 	req = (OSPFReq *) vecino->requests->data;
 	
-	ospf_fill_header (3, buffer, &miniospf->router_id, ospf_link->area);
+	ospf_fill_header (3, buffer, &miniospf->config.router_id, ospf_link->area);
 	pos = 24;
 	
 	/* TODO: Hacer un ciclo aquí */
@@ -706,7 +704,7 @@ void ospf_process_dd (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFHeader *heade
 		case EX_START:
 		if (IS_SET_DD_ALL (dd.flags) == OSPF_DD_FLAG_ALL && header->len == 32) { /* Tamaño mínimo de la cabecera DESC 24 + 8 */
 			/* Él quiere ser el maestro */
-			if (memcmp (&vecino->router_id.s_addr, &miniospf->router_id.s_addr, sizeof (uint32_t)) > 0) {
+			if (memcmp (&vecino->router_id.s_addr, &miniospf->config.router_id.s_addr, sizeof (uint32_t)) > 0) {
 				/* Somo esclavos, obedecer */
 				vecino->dd_seq = dd.dd_seq;
 				
@@ -718,7 +716,7 @@ void ospf_process_dd (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFHeader *heade
 				break;
 			}
 		} else if (!IS_SET_DD_MS (dd.flags) && !IS_SET_DD_I (dd.flags) && vecino->dd_seq == dd.dd_seq &&
-		           memcmp (&vecino->router_id.s_addr, &miniospf->router_id.s_addr, sizeof (uint32_t)) < 0) {
+		           memcmp (&vecino->router_id.s_addr, &miniospf->config.router_id.s_addr, sizeof (uint32_t)) < 0) {
 			/* Es un ack de nuestro esclavo */
 			
 			/* Quitar Init */
@@ -814,7 +812,7 @@ void ospf_process_req (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFHeader *head
 	memcpy (&dest.sin_addr, &vecino->neigh_addr, sizeof (dest.sin_addr));
 	dest.sin_family = AF_INET;
 	
-	ospf_fill_header (4, buffer, &miniospf->router_id, ospf_link->area);
+	ospf_fill_header (4, buffer, &miniospf->config.router_id, ospf_link->area);
 	pos = 24;
 	
 	pos_len = pos;
@@ -900,7 +898,7 @@ void ospf_process_update (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFHeader *h
 		return;
 	}
 	
-	ospf_fill_header (5, buffer, &miniospf->router_id, ospf_link->area);
+	ospf_fill_header (5, buffer, &miniospf->config.router_id, ospf_link->area);
 	pos = 24;
 	
 	memcpy (&lsa_count, header->buffer, sizeof (uint32_t));
@@ -981,7 +979,7 @@ void ospf_send_update_router_link (OSPFMini *miniospf) {
 	}
 	
 	/* Localizar el designated router, revisar si ya tengo al menos FULL para enviar el update */
-	ospf_fill_header (4, buffer, &miniospf->router_id, ospf_link->area);
+	ospf_fill_header (4, buffer, &miniospf->config.router_id, ospf_link->area);
 	pos = 24;
 	
 	t32 = htonl (1);
@@ -1111,10 +1109,10 @@ void ospf_fill_header (int type, char *buffer, struct in_addr *router_id, uint32
 	
 	memcpy (&buffer[8], &area, sizeof (uint32_t));
 	v16 = 0;
-	memcpy (&buffer[10], &v16, sizeof (v16));
 	memcpy (&buffer[12], &v16, sizeof (v16));
+	memcpy (&buffer[14], &v16, sizeof (v16));
 	
-	memset (&buffer[14], 0, 8);
+	memset (&buffer[16], 0, 8);
 }
 
 void ospf_fill_header_end (char *buffer, uint16_t len) {
@@ -1137,7 +1135,7 @@ void ospf_send_hello (OSPFMini *miniospf) {
 	uint32_t dead_interval = htonl (ospf_link->dead_router_interval);
 	OSPFNeighbor *vecino;
 	
-	ospf_fill_header (1, buffer, &miniospf->router_id, ospf_link->area);
+	ospf_fill_header (1, buffer, &miniospf->config.router_id, ospf_link->area);
 	pos = 24;
 	
 	netmask = htonl (netmask4 (ospf_link->main_addr->prefix));
@@ -1147,7 +1145,14 @@ void ospf_send_hello (OSPFMini *miniospf) {
 	memcpy (&buffer[pos], &hello_interval, sizeof (hello_interval));
 	pos = pos + 2;
 	
-	buffer[pos++] = 0x02; /* External Routing */
+	if (ospf_link->area_type == OSPF_AREA_STANDARD) {
+		buffer[pos++] = 0x02; /* External Routing */
+	} else if (ospf_link->area_type == OSPF_AREA_STUB) {
+		buffer[pos++] = 0x00;
+	} else if (ospf_link->area_type == OSPF_AREA_NSSA) {
+		buffer[pos++] = 0x08;
+	}
+	
 	buffer[pos++] = 0; /* Router priority */
 	
 	memcpy (&buffer[pos], &dead_interval, sizeof (dead_interval));
