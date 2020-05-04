@@ -175,16 +175,20 @@ typedef struct {
 	void *cb_arg;
 } NetworkWatcher;
 
-struct ospf_packet {
+typedef struct {
 	/* Pointer to data stream. */
 	unsigned char buffer[2048];
-
+	
 	/* IP destination address. */
-	struct sockaddr_in dest;
+	struct sockaddr_in dst;
+	struct sockaddr_in header_dst;
+	struct sockaddr_in src;
+	
+	signed int ifindex;
 
 	/* OSPF packet length. */
 	uint16_t length;
-};
+} OSPFPacket;
 
 typedef struct {
 	struct in_addr router_id;
@@ -202,7 +206,7 @@ typedef struct {
 	int dd_sent;
 	
 	/* Last sent Database Description packet. */
-	struct ospf_packet dd_last_sent;
+	OSPFPacket dd_last_sent;
 	/* Timestemp when last Database Description packet was sent */
 	struct timespec dd_last_sent_time;
 	struct timespec request_last_sent_time;
@@ -220,9 +224,6 @@ typedef struct {
 typedef struct {
 	Interface *iface;
 	IPAddr *main_addr;
-	
-	int s;
-	int has_nonblocking;
 	
 	uint32_t area;
 	uint8_t area_type;
@@ -247,6 +248,7 @@ typedef struct {
 	
 	char active_interface_name[IFNAMSIZ];
 	char dummy_interface_name[IFNAMSIZ];
+	struct in_addr link_addr;
 	
 	uint16_t hello_interval;
 	uint32_t dead_router_interval;
@@ -258,10 +260,13 @@ typedef struct {
 	NetworkWatcher *watcher;
 	OSPFConfig config;
 	
-	struct sockaddr_in all_ospf_routers_addr;
-	struct sockaddr_in all_ospf_designated_addr;
+	struct in_addr all_ospf_routers_addr;
+	struct in_addr all_ospf_designated_addr;
 	
-	OSPFLink *iface;
+	int socket;
+	int has_nonblocking;
+	
+	OSPFLink *ospf_link;
 	
 	Interface *dummy_iface;
 	
@@ -279,8 +284,7 @@ typedef struct {
 	
 	unsigned char *buffer;
 	
-	struct in_addr origen;
-	struct in_addr destino;
+	OSPFPacket *packet;
 } OSPFHeader;
 
 typedef struct {

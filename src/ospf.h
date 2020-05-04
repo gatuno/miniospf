@@ -21,7 +21,7 @@
 #define IS_SET_DD_ALL(X)        ((X) & OSPF_DD_FLAG_ALL)
 
 void ospf_configure_router_id (OSPFMini *miniospf);
-OSPFLink *ospf_create_iface (OSPFMini *miniospf, Interface *iface);
+OSPFLink *ospf_create_iface (OSPFMini *miniospf, Interface *iface, IPAddr *main_addr);
 int ospf_validate_header (unsigned char *buffer, uint16_t len, OSPFHeader *header);
 void ospf_send_hello (OSPFMini *miniospf);
 void ospf_dr_election (OSPFMini *miniospf, OSPFLink *ospf_link);

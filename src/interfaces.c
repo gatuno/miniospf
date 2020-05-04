@@ -186,6 +186,71 @@ Interface * _interfaces_locate_by_name (GList *list, char *name) {
 	return NULL;
 }
 
+IPAddr *interfaces_get_first_address (Interface *iface, int family) {
+	IPAddr *ip;
+	GList *g;
+	
+	g = iface->address;
+	while (g != NULL) {
+		ip = (IPAddr *) g->data;
+		
+		if (family == ip->family) {
+			return ip;
+		}
+		g = g->next;
+	}
+	
+	return NULL;
+}
+
+int interfaces_search_address4_all (NetworkWatcher *handle, struct in_addr search, Interface **ret_iface, IPAddr **ret_addr) {
+	GList *g, *h;
+	Interface *iface;
+	IPAddr *ip;
+	
+	g = handle->interfaces;
+	while (g != NULL) {
+		iface = (Interface *) g->data;
+		
+		h = iface->address;
+		while (h != NULL) {
+			ip = (IPAddr *) h->data;
+			
+			if (ip->family != AF_INET) {
+				h = h->next;
+				continue;
+			}
+			
+			if (memcmp (&search.s_addr, &ip->sin_addr.s_addr, sizeof (uint32_t)) == 0) {
+				/* IP Encontrada */
+				if (ret_iface != NULL) {
+					*ret_iface = iface;
+				}
+				
+				if (ret_addr != NULL) {
+					*ret_addr = ip;
+				}
+				
+				return 0;
+			}
+			
+			h = h->next;
+		}
+		
+		g = g->next;
+	}
+	
+	if (ret_iface != NULL) {
+		*ret_iface = NULL;
+	}
+	
+	if (ret_addr != NULL) {
+		*ret_addr = NULL;
+	}
+	
+	return -1;
+}
+
 static int _interfaces_wait_ack_or_error (struct nl_msg *msg, void *arg) {
 	int *ret = (int *) arg;
 	struct nlmsgerr *l_err;

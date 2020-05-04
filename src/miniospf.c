@@ -26,6 +26,7 @@
 #include "utils.h"
 #include "lsa.h"
 #include "ospf-changes.h"
+#include "sockopt.h"
 
 #define ALL_OSPF_ROUTERS "224.0.0.5"
 #define ALL_OSPF_DESIGNATED_ROUTERS "224.0.0.6"
@@ -101,20 +102,17 @@ static void _main_setup_signal (void) {
 	}
 }
 
-void process_packet (OSPFMini *miniospf, OSPFLink *ospf_link) {
+void process_packet (OSPFMini *miniospf) {
 	int res;
-	unsigned char buffer[2048], *ospf_buffer_start;
-	struct sockaddr_in origen;
-	socklen_t origen_s;
+	OSPFPacket packet;
+	unsigned char *ospf_buffer_start;
 	int type;
 	OSPFHeader header;
 	struct ip *ip;
 	unsigned int ip_header_length;
 	
 	do {
-		origen_s = sizeof (origen);
-		
-		res = recvfrom (ospf_link->s, buffer, sizeof (buffer), 0, (struct sockaddr *) &origen, &origen_s);
+		res = socket_recv (miniospf->socket, &packet);
 		
 		if (res < 0 && errno == EAGAIN) {
 			break; /* Nada más que leer */
@@ -125,12 +123,12 @@ void process_packet (OSPFMini *miniospf, OSPFLink *ospf_link) {
 			break;
 		}
 		
-		if (res < sizeof(struct ip)) {
+		if (res < sizeof (struct ip)) {
 			/* Muy pequeño para ser IP */
 			continue;
 		}
 		
-		ip = (struct ip *) buffer;
+		ip = (struct ip *) packet.buffer;
 		
 		ip_header_length = ip->ip_hl * 4;
 		
@@ -139,7 +137,7 @@ void process_packet (OSPFMini *miniospf, OSPFLink *ospf_link) {
 			continue;
 		}
 		
-		ospf_buffer_start = buffer + ip_header_length;
+		ospf_buffer_start = packet.buffer + ip_header_length;
 		
 		type = ospf_validate_header (ospf_buffer_start, res - ip_header_length, &header);
 		
@@ -148,36 +146,52 @@ void process_packet (OSPFMini *miniospf, OSPFLink *ospf_link) {
 			continue;
 		}
 		
-		if (memcmp (&miniospf->all_ospf_designated_addr.sin_addr, &ip->ip_dst, sizeof (ip->ip_dst)) == 0) {
+		header.packet = &packet;
+		
+		if (memcmp (&miniospf->all_ospf_designated_addr, &packet.header_dst.sin_addr, sizeof (struct in_addr)) == 0) {
 			/* Es un paquete destinado a 224.0.0.6, ignorar, yo no soy DR o BDR */
 			continue;
 		}
 		
+		/* Si no hay enlace, no hay nada que procesar */
+		if (miniospf->ospf_link == NULL) {
+			continue;
+		}
+		
+		/* Comparar que la ifndex coincida con nuestra interfaz de red,
+		 * y también que el dst local sea de nuestra interfaz */
+		if (miniospf->ospf_link->iface->index != packet.ifindex) {
+			/* Paquete recibido en la interfaz incorrecta */
+			continue;
+		}
+		
+		if (memcmp (&miniospf->ospf_link->main_addr->sin_addr, &packet.dst.sin_addr, sizeof (struct in_addr)) != 0) {
+			/* Paquete recibido con destino otra IP, no mi IP principal, ignorar */
+			continue;
+		}
+		
 		/* Revisar que el área coincida el área del ospf_link */
-		if (memcmp (&ospf_link->area, &header.area, sizeof (header.area)) != 0) {
+		if (memcmp (&miniospf->ospf_link->area, &header.area, sizeof (header.area)) != 0) {
 			/* Como es de un área diferente, reportar */
 			continue;
 		}
 		
-		memcpy (&header.origen, &origen.sin_addr, sizeof (origen.sin_addr));
-		memcpy (&header.destino, &ip->ip_dst, sizeof (ip->ip_dst));
-		
 		/* Ahora, procesar los paquetes por tipo */
 		switch (type) {
 			case 1: /* OSPF Hello */
-				ospf_process_hello (miniospf, ospf_link, &header);
+				ospf_process_hello (miniospf, miniospf->ospf_link, &header);
 				break;
 			case 2: /* OSPF DD */
-				ospf_process_dd (miniospf, ospf_link, &header);
+				ospf_process_dd (miniospf, miniospf->ospf_link, &header);
 				break;
 			case 3: /* OSPF Request */
-				ospf_process_req (miniospf, ospf_link, &header);
+				ospf_process_req (miniospf, miniospf->ospf_link, &header);
 				break;
 			case 4: /* OSPF Update */
-				ospf_process_update (miniospf, ospf_link, &header);
+				ospf_process_update (miniospf, miniospf->ospf_link, &header);
 				break;
 		}
-	} while (ospf_link->has_nonblocking);
+	} while (miniospf->has_nonblocking);
 }
 
 void main_loop (OSPFMini *miniospf) {
@@ -205,8 +219,8 @@ void main_loop (OSPFMini *miniospf) {
 		poller_count++;
 	}
 	
-	/* Agregar los fd por cada socket ospf */
-	poller[poller_count].fd = miniospf->iface->s;
+	/* Agregar los fd por el socket ospf */
+	poller[poller_count].fd = miniospf->socket;
 	poller[poller_count].events = POLLIN | POLLPRI;
 	
 	poller_count++;
@@ -214,10 +228,10 @@ void main_loop (OSPFMini *miniospf) {
 	clock_gettime (CLOCK_MONOTONIC, &now);
 	last = hello_timer = now;
 	
-	if (miniospf->iface->iface->flags & IFF_UP) {
+	if (miniospf->ospf_link->iface->flags & IFF_UP) {
 		/* La interfaz está activa, enviar hellos */
-		miniospf->iface->state = OSPF_ISM_Waiting;
-		miniospf->iface->waiting_time = now;
+		miniospf->ospf_link->state = OSPF_ISM_Waiting;
+		miniospf->ospf_link->waiting_time = now;
 		ospf_send_hello (miniospf);
 	}
 	
@@ -254,12 +268,10 @@ void main_loop (OSPFMini *miniospf) {
 			}
 		}
 		
-		/* TODO: Revisar el estado del OPSF Link para evitar iterar sobre él */
-		
 		/* Revisar el socket aquí */
 		if (poller[start].revents != 0) {
 			
-			process_packet (miniospf, miniospf->iface);
+			process_packet (miniospf);
 			poller[start].revents = 0;
 		}
 		
@@ -268,20 +280,20 @@ void main_loop (OSPFMini *miniospf) {
 		
 		elapsed = timespec_diff (hello_timer, now);
 		
-		if (elapsed.tv_sec >= miniospf->iface->hello_interval) {
-			if (miniospf->iface->iface->flags & IFF_UP) {
+		if (elapsed.tv_sec >= miniospf->ospf_link->hello_interval) {
+			if (miniospf->ospf_link->iface->flags & IFF_UP) {
 				/* La interfaz está activa, enviar hellos */
 				ospf_send_hello (miniospf);
 			}
 			hello_timer = now;
 		}
 		
-		if (miniospf->iface->state == OSPF_ISM_Waiting) {
-			elapsed = timespec_diff (miniospf->iface->waiting_time, now);
+		if (miniospf->ospf_link->state == OSPF_ISM_Waiting) {
+			elapsed = timespec_diff (miniospf->ospf_link->waiting_time, now);
 			
-			if (elapsed.tv_sec >= miniospf->iface->dead_router_interval) {
+			if (elapsed.tv_sec >= miniospf->ospf_link->dead_router_interval) {
 				/* Timeout para waiting. Tiempo de elegir un router */
-				ospf_dr_election (miniospf, miniospf->iface);
+				ospf_dr_election (miniospf, miniospf->ospf_link);
 			}
 		}
 		/* Recorrer cada uno de los vecinos y eliminarlos basados en el dead router interval */
@@ -311,7 +323,13 @@ void print_usage (FILE* stream, int exit_code, const char *program_name) {
 	fprintf (stream,
 		"  -h  --help                          Display this usage information.\n"
 		"  -i  --active-interface  iface_name  Use this interface as active OSPF interface.\n"
+		"                                      Will choose the first IPv4 address from this interface\n"
+		"                                      if not specified.\n"
+		"      --active-address ip_address     Choose this IP address for use with OSPF.\n"
+		"                                      If active-interface is also present, will search\n"
+		"                                      this IP address on that interface.\n"
 		"  -p  --passive-interface iface_name  Use this interface as passive OSPF interface.\n"
+		"                                      Will announce all the ip addresses.\n"
 		"  -r  --router-id router_id           Specify IP address as Router ID.\n"
 		"  -e  --hello interval                Use 'interval' seconds for sending hellos.\n"
 		"  -d  --router-dead interval          Use 'interval' seconds as Router Dead Interval.\n"
@@ -333,6 +351,7 @@ void _parse_cmd_line_args (OSPFConfig *config, int argc, char **argv) {
 	const struct option long_options[] = {
 		{ "help", 0, NULL, 'h' },
 		{ "active-interface", 1, NULL, 'i' },
+		{ "active-address", 1, NULL, 'z'},
 		{ "passive-interface", 1, NULL, 'p' },
 		{ "router-id", 1, NULL, 'r' },
 		{ "hello", 1, NULL, 'e' },
@@ -418,6 +437,17 @@ void _parse_cmd_line_args (OSPFConfig *config, int argc, char **argv) {
 					print_usage (stderr, 1, program_name);
 				}
 				break;
+			case 'z':
+				/* Intentar parsear la dirección IP principal */
+				ret = inet_pton (AF_INET, optarg, &ip);
+				
+				if (ret > 0) {
+					/* Tenemos una IP principal válida */
+					memcpy (&config->link_addr.s_addr, &ip, sizeof (uint32_t));
+				} else {
+					print_usage (stderr, 1, program_name);
+				}
+				break;
 			case '?':
 				print_usage (stderr, 1, program_name);
 				break;
@@ -485,7 +515,9 @@ void choose_best_router_id (OSPFConfig *config, Interface *activa, Interface *pa
 int main (int argc, char *argv[]) {
 	OSPFMini miniospf;
 	Interface *iface_activa, *pasiva;
+	IPAddr *ip_activa;
 	struct in_addr router_id_zero;
+	char buffer_ip[1024];
 	
 	memset (&miniospf, 0, sizeof (miniospf));
 	miniospf.watcher = init_network_watcher ();
@@ -500,21 +532,49 @@ int main (int argc, char *argv[]) {
 	
 	_parse_cmd_line_args (&miniospf.config, argc, argv);
 	
-	if (miniospf.config.active_interface_name[0] == 0) {
+	memset (&router_id_zero, 0, sizeof (router_id_zero));
+	if (miniospf.config.active_interface_name[0] == 0 &&
+	    memcmp (&router_id_zero, &miniospf.config.link_addr, sizeof (uint32_t)) == 0) {
 		/* No hay interfaz activa, cerrar */
-		fprintf (stderr, "Active interface not specified\n");
+		fprintf (stderr, "Active interface not specified or IP address\n");
 		print_usage (stderr, 1, argv[0]);
 	}
 	
-	/* Localizar las interfaces necesarias */
-	iface_activa = _interfaces_locate_by_name (miniospf.watcher->interfaces, miniospf.config.active_interface_name);
-	
-	if (iface_activa == NULL) {
-		fprintf (stderr, "Interfaz %s not found\n", miniospf.config.active_interface_name);
+	ip_activa = NULL;
+	if (miniospf.config.active_interface_name[0] != 0) {
+		/* Localizar las interfaces necesarias */
+		iface_activa = _interfaces_locate_by_name (miniospf.watcher->interfaces, miniospf.config.active_interface_name);
 		
-		return 1;
+		if (iface_activa == NULL) {
+			fprintf (stderr, "Interfaz %s not found\n", miniospf.config.active_interface_name);
+			
+			return 1;
+		}
 	}
 	
+	/* Si especificaron una IP, buscarla y validar la interfaz */
+	if (memcmp (&router_id_zero, &miniospf.config.link_addr, sizeof (uint32_t)) != 0) {
+		Interface *s_iface = NULL;
+		/* Localizar la IP y la interfaz */
+		interfaces_search_address4_all (miniospf.watcher, miniospf.config.link_addr, &s_iface, &ip_activa);
+		
+		if (ip_activa == NULL) {
+			inet_ntop (AF_INET, &miniospf.config.link_addr.s_addr, buffer_ip, sizeof (buffer_ip));
+			fprintf (stderr, "IP address %s not found\n", buffer_ip);
+			return 1;
+		}
+		
+		if (iface_activa == NULL) {
+			iface_activa = s_iface;
+		} else if (s_iface != iface_activa) {
+			inet_ntop (AF_INET, &miniospf.config.link_addr.s_addr, buffer_ip, sizeof (buffer_ip));
+			fprintf (stderr, "IP address %s doesn't belong to active interface %s\n", buffer_ip, miniospf.config.active_interface_name);
+			
+			return 1;
+		}
+	}
+	
+	/* Preparar la interfaz pasiva */
 	if (miniospf.config.dummy_interface_name[0] != 0) {
 		pasiva = _interfaces_locate_by_name (miniospf.watcher->interfaces, miniospf.config.dummy_interface_name);
 		
@@ -534,11 +594,8 @@ int main (int argc, char *argv[]) {
 	memset (&miniospf.all_ospf_routers_addr, 0, sizeof (miniospf.all_ospf_routers_addr));
 	memset (&miniospf.all_ospf_designated_addr, 0, sizeof (miniospf.all_ospf_designated_addr));
 	
-	inet_pton (AF_INET, ALL_OSPF_ROUTERS, &miniospf.all_ospf_routers_addr.sin_addr.s_addr);
-	inet_pton (AF_INET, ALL_OSPF_DESIGNATED_ROUTERS, &miniospf.all_ospf_designated_addr.sin_addr.s_addr);
-	
-	miniospf.all_ospf_routers_addr.sin_family = AF_INET;
-	miniospf.all_ospf_designated_addr.sin_family = AF_INET;
+	inet_pton (AF_INET, ALL_OSPF_ROUTERS, &miniospf.all_ospf_routers_addr.s_addr);
+	inet_pton (AF_INET, ALL_OSPF_DESIGNATED_ROUTERS, &miniospf.all_ospf_designated_addr.s_addr);
 	
 	/* Router ID */
 	memset (&router_id_zero, 0, sizeof (router_id_zero));
@@ -565,15 +622,29 @@ int main (int argc, char *argv[]) {
 		return 1;
 	}
 	
-	/* Crear la interfaz ospf de datos */
-	miniospf.iface = ospf_create_iface (&miniospf, iface_activa);
-	if (miniospf.iface == NULL) {
-		fprintf (stderr, "Error\n");
+	/* Preparar el socket de red */
+	miniospf.socket = socket_create ();
+	
+	if (miniospf.socket < 0) {
+		fprintf (stderr, "Could not create IP RAW OSPF socket\n");
 		
 		return 1;
 	}
 	
+	/* Revisar si tiene activado el no-bloqueante */
+	miniospf.has_nonblocking = socket_non_blocking (miniospf.socket);
+	
 	miniospf.dummy_iface = pasiva;
+	
+	/* Crear la interfaz ospf de datos */
+	miniospf.ospf_link = ospf_create_iface (&miniospf, iface_activa, ip_activa);
+	if (miniospf.ospf_link == NULL) {
+		fprintf (stderr, "Error\n");
+		
+		close (miniospf.socket);
+		
+		return 1;
+	}
 	
 	//lsa_update_router_lsa (&miniospf);
 	

@@ -15,32 +15,31 @@
 #include "utils.h"
 #include "glist.h"
 #include "lsa.h"
+#include "interfaces.h"
+#include "sockopt.h"
 
 static int ospf_db_desc_is_dup (OSPFDD *dd, OSPFNeighbor *vecino);
 void ospf_resend_dd (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFNeighbor *vecino);
 
-IPAddr *locate_first_address (GList *address_list, int family) {
-	IPAddr *ip;
-	
-	while (address_list != NULL) {
-		ip = (IPAddr *) address_list->data;
-		
-		if (family == ip->family) {
-			return ip;
-		}
-		address_list = address_list->next;
-	}
-	
-	return NULL;
-}
-
-OSPFLink *ospf_create_iface (OSPFMini *miniospf, Interface *iface) {
+OSPFLink *ospf_create_iface (OSPFMini *miniospf, Interface *iface, IPAddr *main_addr) {
 	OSPFLink *ospf_link;
 	struct ip_mreqn mcast_req;
-	int s;
-	int flags;
-	unsigned char g;
-	IPAddr *main_addr;
+	
+	/* La interfaz debe tener una IP principal */
+	if (main_addr == NULL) {
+		main_addr = interfaces_get_first_address (iface, AF_INET);
+		
+		if (main_addr == NULL) return NULL;
+	} else {
+		/* Asegurarnos de que esta ip realmente pertnece a esta interfaz */
+		Interface *search = NULL;
+		
+		interfaces_search_address4_all (miniospf->watcher, main_addr->sin_addr, &search, NULL);
+		
+		if (search != iface) {
+			return NULL;
+		}
+	}
 	
 	ospf_link = (OSPFLink *) malloc (sizeof (OSPFLink));
 	
@@ -48,63 +47,19 @@ OSPFLink *ospf_create_iface (OSPFMini *miniospf, Interface *iface) {
 		return NULL;
 	}
 	
-	/* La interfaz debe tener una IP principal */
-	main_addr = locate_first_address (iface->address, AF_INET);
-	
-	if (main_addr == NULL) {
-		free (ospf_link);
-		
-		return NULL;
-	}
-	
+	ospf_link->iface = iface;
 	ospf_link->main_addr = main_addr;
 	
-	/* Crear el socket especial RAW de OSPF */
-	ospf_link->s = socket (AF_INET, SOCK_RAW, 89);
-	
-	if (ospf_link->s < 0) {
-		perror ("Socket");
-		
-		free (ospf_link);
-		return NULL;
-	}
-	
-	/* Activar las opciones multicast */
-	g = 0;
-	setsockopt (ospf_link->s, IPPROTO_IP, IP_MULTICAST_LOOP, &g, sizeof(g));
-	g = 1;
-	setsockopt (ospf_link->s, IPPROTO_IP, IP_MULTICAST_TTL, &g, sizeof(g));
-	
-	/* Asociar al grupo multicast 224.0.0.5 */
+	/* Asociar al grupo multicast 224.0.0.5 de esta interfaz */
 	memset (&mcast_req, 0, sizeof (mcast_req));
-	mcast_req.imr_multiaddr.s_addr = miniospf->all_ospf_routers_addr.sin_addr.s_addr;
+	mcast_req.imr_multiaddr.s_addr = miniospf->all_ospf_routers_addr.s_addr;
 	mcast_req.imr_ifindex = iface->index;
 	
-	if (setsockopt (ospf_link->s, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mcast_req, sizeof (mcast_req)) < 0) {
+	if (setsockopt (miniospf->socket, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mcast_req, sizeof (mcast_req)) < 0) {
 		perror ("Error executing IPv4 ADD_MEMBERSHIP Multicast");
-		close (ospf_link->s);
 		free (ospf_link);
 		
 		return NULL;
-	}
-	
-	if (setsockopt (ospf_link->s, SOL_SOCKET, SO_BINDTODEVICE, iface->name, strlen (iface->name)) < 0) {
-		perror ("Error binding to device");
-		close (ospf_link->s);
-		free (ospf_link);
-		
-		return NULL;
-	}
-	
-	flags = fcntl (ospf_link->s, F_GETFL, 0);
-	flags = flags | O_NONBLOCK;
-	fcntl (ospf_link->s, F_SETFL, flags);
-	
-	flags = fcntl (ospf_link->s, F_GETFL, 0);
-	
-	ospf_link->has_nonblocking = 0;
-	if (flags & O_NONBLOCK) {
-		ospf_link->has_nonblocking = 1;
 	}
 	
 	ospf_link->hello_interval = miniospf->config.hello_interval;
@@ -117,8 +72,6 @@ OSPFLink *ospf_create_iface (OSPFMini *miniospf, Interface *iface) {
 	memcpy (&ospf_link->area, &miniospf->config.area_id, sizeof (uint32_t));
 	ospf_link->area_type = miniospf->config.area_type;
 	ospf_link->cost = miniospf->config.cost;
-	
-	ospf_link->iface = iface;
 	
 	ospf_link->state = OSPF_ISM_Down;
 	
@@ -156,7 +109,7 @@ OSPFNeighbor * ospf_add_neighbor (OSPFLink *ospf_link, OSPFHeader *header, OSPFH
 		return NULL;
 	}
 	
-	memcpy (&vecino->neigh_addr.s_addr, &header->origen.s_addr, sizeof (uint32_t));
+	memcpy (&vecino->neigh_addr.s_addr, &header->packet->src.sin_addr.s_addr, sizeof (uint32_t));
 	memcpy (&vecino->router_id.s_addr, &header->router_id.s_addr, sizeof (uint32_t));
 	
 	memcpy (&vecino->designated.s_addr, &hello->designated.s_addr, sizeof (uint32_t));
@@ -432,7 +385,7 @@ void ospf_process_hello (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFHeader *he
 	n_neighbors = (header->len - 44) / 4;
 	neighbors = (struct in_addr *) &header->buffer[20];
 	
-	vecino = ospf_locate_neighbor (ospf_link, &header->origen);
+	vecino = ospf_locate_neighbor (ospf_link, &header->packet->src.sin_addr);
 	
 	if (vecino == NULL) {
 		vecino = ospf_add_neighbor (ospf_link, header, hello);
@@ -473,10 +426,10 @@ void ospf_process_hello (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFHeader *he
 	 * Salir del waiting */
 	if (ospf_link->state == OSPF_ISM_Waiting) {
 		memset (&empty, 0, sizeof (empty));
-		if (memcmp (&vecino->backup.s_addr, &header->origen.s_addr, sizeof (uint32_t)) == 0) {
+		if (memcmp (&vecino->backup.s_addr, &header->packet->src.sin_addr.s_addr, sizeof (uint32_t)) == 0) {
 			ospf_link->state = OSPF_ISM_DROther;
 			ospf_dr_election (miniospf, ospf_link);
-		} else if (memcmp (&vecino->designated.s_addr, &header->origen.s_addr, sizeof (uint32_t)) == 0 &&
+		} else if (memcmp (&vecino->designated.s_addr, &header->packet->src.sin_addr.s_addr, sizeof (uint32_t)) == 0 &&
 			       memcmp (&vecino->backup.s_addr, &empty.s_addr, sizeof (uint32_t)) == 0) {
 			ospf_link->state = OSPF_ISM_DROther;
 			ospf_dr_election (miniospf, ospf_link);
@@ -486,23 +439,12 @@ void ospf_process_hello (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFHeader *he
 	}
 }
 
-void ospf_save_last_dd (OSPFMini *miniospf, OSPFNeighbor *vecino, char *buffer, uint16_t len) {
-	if (len == 0) return;
-	
-	memcpy (vecino->dd_last_sent.buffer, buffer, len);
-	vecino->dd_last_sent.length = len;
-	
-	memset (&vecino->dd_last_sent.dest, 0, sizeof (vecino->dd_last_sent.dest));
-	memcpy (&vecino->dd_last_sent.dest.sin_addr, &vecino->neigh_addr, sizeof (vecino->dd_last_sent.dest.sin_addr));
-	vecino->dd_last_sent.dest.sin_family = AF_INET;
-}
-
 void ospf_resend_dd (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFNeighbor *vecino) {
 	int res;
 	
 	printf ("Reenviando OSPF DD\n");
 	
-	res = sendto (miniospf->iface->s, vecino->dd_last_sent.buffer, vecino->dd_last_sent.length, 0, (struct sockaddr *) &vecino->dd_last_sent.dest, sizeof (vecino->dd_last_sent.dest));
+	res = socket_send (miniospf->socket, &vecino->dd_last_sent);
 	
 	if (res < 0) {
 		perror ("Sendto");
@@ -514,54 +456,61 @@ void ospf_resend_dd (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFNeighbor *veci
 
 void ospf_send_dd (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFNeighbor *vecino) {
 	GList *g;
-	unsigned char buffer [2048];
+	OSPFPacket packet;
 	size_t pos, pos_flags;
 	uint16_t t16;
 	uint32_t t32;
 	
-	ospf_fill_header (2, buffer, &miniospf->config.router_id, ospf_link->area);
+	ospf_fill_header (2, packet.buffer, &miniospf->config.router_id, ospf_link->area);
 	pos = 24;
 	
 	t16 = htons (ospf_link->iface->mtu);
-	memcpy (&buffer[pos], &t16, sizeof (uint16_t));
+	memcpy (&packet.buffer[pos], &t16, sizeof (uint16_t));
 	pos = pos + 2;
 	
 	if (ospf_link->area_type == OSPF_AREA_STANDARD) {
-		buffer[pos++] = 0x02; /* External Routing */
+		packet.buffer[pos++] = 0x02; /* External Routing */
 	} else if (ospf_link->area_type == OSPF_AREA_STUB) {
-		buffer[pos++] = 0x00; /* Las áreas stub no tienen external routing */
+		packet.buffer[pos++] = 0x00; /* Las áreas stub no tienen external routing */
 	} else if (ospf_link->area_type == OSPF_AREA_NSSA) {
-		buffer[pos++] = 0x08; /* Las áreas nssa no tienen external pero tienen nssa bit */
+		packet.buffer[pos++] = 0x08; /* Las áreas nssa no tienen external pero tienen nssa bit */
 	}
 	
 	pos_flags = pos;
-	buffer[pos++] = vecino->dd_flags;
+	packet.buffer[pos++] = vecino->dd_flags;
 	
 	t32 = htonl (vecino->dd_seq);
-	memcpy (&buffer[pos], &t32, sizeof (uint32_t));
+	memcpy (&packet.buffer[pos], &t32, sizeof (uint32_t));
 	pos = pos + 4;
 	
 	/* Enviar nuestro único Router LSA si no ha sido enviado ya */
 	if (!IS_SET_DD_I (vecino->dd_flags) && vecino->dd_sent == 0) {
 		vecino->dd_flags &= ~(OSPF_DD_FLAG_M); /* Desactivar la bandera de More */
-		buffer[pos_flags] = vecino->dd_flags;
+		packet.buffer[pos_flags] = vecino->dd_flags;
 		
-		lsa_write_lsa_header (&buffer[pos], &miniospf->router_lsa);
+		lsa_write_lsa_header (&packet.buffer[pos], &miniospf->router_lsa);
 		pos = pos + 20;
 		
 		vecino->dd_sent = 1;
 	}
 	
-	ospf_fill_header_end (buffer, pos);
+	ospf_fill_header_end (packet.buffer, pos);
+	packet.length = pos;
 	
 	int res;
 	
-	struct sockaddr_in dest;
-	memset (&dest, 0, sizeof (dest));
-	memcpy (&dest.sin_addr, &vecino->neigh_addr, sizeof (dest.sin_addr));
-	dest.sin_family = AF_INET;
+	/* Armar la información de packet info */
+	packet.dst.sin_family = AF_INET;
+	packet.dst.sin_port = 0;
+	memcpy (&packet.dst.sin_addr, &vecino->neigh_addr, sizeof (struct in_addr));
 	
-	res = sendto (miniospf->iface->s, buffer, pos, 0, (struct sockaddr *) &dest, sizeof (dest));
+	packet.src.sin_family = AF_INET;
+	packet.src.sin_port = 0;
+	memcpy (&packet.src.sin_addr, &ospf_link->main_addr->sin_addr, sizeof (struct in_addr));
+	
+	packet.ifindex = ospf_link->iface->index;
+	
+	res = socket_send (miniospf->socket, &packet);
 	
 	if (res < 0) {
 		perror ("Sendto");
@@ -570,11 +519,11 @@ void ospf_send_dd (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFNeighbor *vecino
 	/* Marcar el timestamp de la última vez que envié el DD */
 	clock_gettime (CLOCK_MONOTONIC, &vecino->dd_last_sent_time);
 	
-	ospf_save_last_dd (miniospf, vecino, buffer, pos);
+	memcpy (&vecino->dd_last_sent, &packet, sizeof (packet));
 }
 
 void ospf_send_req (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFNeighbor *vecino) {
-	unsigned char buffer [2048];
+	OSPFPacket packet;
 	size_t pos;
 	uint16_t t16;
 	uint32_t t32;
@@ -584,31 +533,38 @@ void ospf_send_req (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFNeighbor *vecin
 	
 	req = (OSPFReq *) vecino->requests->data;
 	
-	ospf_fill_header (3, buffer, &miniospf->config.router_id, ospf_link->area);
+	ospf_fill_header (3, packet.buffer, &miniospf->config.router_id, ospf_link->area);
 	pos = 24;
 	
 	/* TODO: Hacer un ciclo aquí */
 	/* Enviar tantos requests como sea posible */
 	t32 = htonl (req->type);
-	memcpy (&buffer[pos], &t32, sizeof (uint32_t));
+	memcpy (&packet.buffer[pos], &t32, sizeof (uint32_t));
 	pos = pos + 4;
 	
-	memcpy (&buffer[pos], &req->link_state_id, sizeof (uint32_t));
+	memcpy (&packet.buffer[pos], &req->link_state_id, sizeof (uint32_t));
 	pos = pos + 4;
 	
-	memcpy (&buffer[pos], &req->advert_router, sizeof (uint32_t));
+	memcpy (&packet.buffer[pos], &req->advert_router, sizeof (uint32_t));
 	pos = pos + 4;
 	
-	ospf_fill_header_end (buffer, pos);
+	ospf_fill_header_end (packet.buffer, pos);
+	packet.length = pos;
 	
 	int res;
 	
-	struct sockaddr_in dest;
-	memset (&dest, 0, sizeof (dest));
-	memcpy (&dest.sin_addr, &vecino->neigh_addr, sizeof (dest.sin_addr));
-	dest.sin_family = AF_INET;
+	/* Armar la información de packet info */
+	packet.dst.sin_family = AF_INET;
+	packet.dst.sin_port = 0;
+	memcpy (&packet.dst.sin_addr, &vecino->neigh_addr, sizeof (struct in_addr));
 	
-	res = sendto (miniospf->iface->s, buffer, pos, 0, (struct sockaddr *) &dest, sizeof (dest));
+	packet.src.sin_family = AF_INET;
+	packet.src.sin_port = 0;
+	memcpy (&packet.src.sin_addr, &ospf_link->main_addr->sin_addr, sizeof (struct in_addr));
+	
+	packet.ifindex = ospf_link->iface->index;
+	
+	res = socket_send (miniospf->socket, &packet);
 	
 	if (res < 0) {
 		perror ("Sendto");
@@ -692,7 +648,7 @@ void ospf_process_dd (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFHeader *heade
 	dd.n_lsas = (header->len - 24 - 8) / 20;
 	dd.lsas = (OSPFDDLSA *) &header->buffer[8];
 	
-	vecino = ospf_locate_neighbor (ospf_link, &header->origen);
+	vecino = ospf_locate_neighbor (ospf_link, &header->packet->src.sin_addr);
 	
 	if (vecino == NULL) {
 		/* ¿Recibí un paquete de un vecino que no tengo hello? */
@@ -786,7 +742,7 @@ void ospf_process_dd (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFHeader *heade
 void ospf_process_req (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFHeader *header) {
 	OSPFReq req;
 	OSPFNeighbor *vecino;
-	char buffer [4096];
+	OSPFPacket packet;
 	size_t pos, pos_len;
 	int len, lsa_len;
 	char buffer_lsa[4096];
@@ -794,33 +750,45 @@ void ospf_process_req (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFHeader *head
 	uint32_t t32;
 	int res;
 	
-	vecino = ospf_locate_neighbor (ospf_link, &header->origen);
+	vecino = ospf_locate_neighbor (ospf_link, &header->packet->src.sin_addr);
 	
 	if (vecino == NULL) {
 		/* ¿Recibí un paquete de un vecino que no tengo hello? */
 		return;
 	}
 	
-	/* Revisar si este paquete tiene el master, y ver quién debe ser el master */
+	/* Tenemos que estar en un estado EXCHANGE, LOADING o FULL para recibir requests */
 	if (vecino->way != EXCHANGE && vecino->way != LOADING && vecino->way != FULL) {
 		printf ("Paquete request con error de estado en el vecino\n");
 		return;
 	}
 	
-	struct sockaddr_in dest;
-	memset (&dest, 0, sizeof (dest));
-	memcpy (&dest.sin_addr, &vecino->neigh_addr, sizeof (dest.sin_addr));
-	dest.sin_family = AF_INET;
+	/* Pre-armar un paquete UPDATE para satisfacer todos los updates */
+	memset (&packet, 0, sizeof (packet));
 	
-	ospf_fill_header (4, buffer, &miniospf->config.router_id, ospf_link->area);
+	/* Copiar el destino */
+	packet.dst.sin_family = AF_INET;
+	packet.dst.sin_port = 0;
+	memcpy (&packet.dst.sin_addr, &vecino->neigh_addr, sizeof (struct in_addr));
+	
+	/* Copiar la IP Local */
+	packet.src.sin_family = AF_INET;
+	packet.src.sin_port = 0;
+	memcpy (&packet.src.sin_addr, &ospf_link->main_addr->sin_addr.s_addr, sizeof (struct in_addr));
+	
+	/* Copiar el index de la interfaz */
+	packet.ifindex = ospf_link->iface->index;
+	
+	ospf_fill_header (4, packet.buffer, &miniospf->config.router_id, ospf_link->area);
 	pos = 24;
 	
 	pos_len = pos;
 	pos += 4;
 	
 	lsa_count = 0;
-	len = header->len - 24; /* Cabecera de OSPF */
-	while (len >= 12) {
+	len = header->len - 24; /* Tamaño de la cabecera de OSPF */
+	
+	while (len >= 12) { /* Recorrer mientras haya requests */
 		memcpy (&req, &header->buffer[header->len - 24 - len], 12);
 		req.type = ntohl (req.type);
 		/* Buscar que el LSA que pida, lo tenga */
@@ -833,11 +801,12 @@ void ospf_process_req (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFHeader *head
 			if (pos + lsa_len >= 1500) { /* TODO: Revisar este MTU desde la interfaz */
 				/* Enviar este paquete ya, */
 				t32 = htonl (lsa_count);
-				memcpy (&buffer[pos_len], &t32, sizeof (uint32_t));
+				memcpy (&packet.buffer[pos_len], &t32, sizeof (uint32_t));
 				
-				ospf_fill_header_end (buffer, pos);
+				ospf_fill_header_end (packet.buffer, pos);
+				packet.length = pos;
 				
-				res = sendto (miniospf->iface->s, buffer, pos, 0, (struct sockaddr *) &dest, sizeof (dest));
+				res = socket_send (miniospf->socket, &packet);
 	
 				if (res < 0) {
 					perror ("Sendto");
@@ -847,7 +816,8 @@ void ospf_process_req (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFHeader *head
 				pos = pos_len + 4;
 			}
 			
-			memcpy (&buffer[pos], buffer_lsa, lsa_len);
+			/* Copiar mi LSA */
+			memcpy (&packet.buffer[pos], buffer_lsa, lsa_len);
 			pos = pos + lsa_len;
 			lsa_count++;
 		} else {
@@ -856,16 +826,17 @@ void ospf_process_req (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFHeader *head
 			return;
 		}
 		
-		len -= 12;
+		len -= 12; /* Siguiente Request */
 	}
 	
 	/* Enviar este paquete ya, */
 	t32 = htonl (lsa_count);
-	memcpy (&buffer[pos_len], &t32, sizeof (uint32_t));
+	memcpy (&packet.buffer[pos_len], &t32, sizeof (uint32_t));
 	
-	ospf_fill_header_end (buffer, pos);
+	ospf_fill_header_end (packet.buffer, pos);
+	packet.length = pos;
 	
-	res = sendto (miniospf->iface->s, buffer, pos, 0, (struct sockaddr *) &dest, sizeof (dest));
+	res = socket_send (miniospf->socket, &packet);
 
 	if (res < 0) {
 		perror ("Sendto");
@@ -877,7 +848,7 @@ void ospf_process_update (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFHeader *h
 	OSPFReq *req;
 	LSA lsa;
 	OSPFNeighbor *vecino;
-	char buffer [4096];
+	OSPFPacket packet;
 	size_t pos;
 	int lsa_count, len;
 	uint32_t t32;
@@ -885,7 +856,7 @@ void ospf_process_update (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFHeader *h
 	GList *pos_req;
 	int ack_count;
 	
-	vecino = ospf_locate_neighbor (ospf_link, &header->origen);
+	vecino = ospf_locate_neighbor (ospf_link, &header->packet->src.sin_addr);
 	
 	if (vecino == NULL) {
 		/* ¿Recibí un paquete de un vecino que no tengo hello? */
@@ -898,7 +869,7 @@ void ospf_process_update (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFHeader *h
 		return;
 	}
 	
-	ospf_fill_header (5, buffer, &miniospf->config.router_id, ospf_link->area);
+	ospf_fill_header (5, packet.buffer, &miniospf->config.router_id, ospf_link->area);
 	pos = 24;
 	
 	memcpy (&lsa_count, header->buffer, sizeof (uint32_t));
@@ -938,7 +909,7 @@ void ospf_process_update (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFHeader *h
 			continue;
 		}
 		
-		lsa_write_lsa_header (&buffer[pos], &lsa);
+		lsa_write_lsa_header (&packet.buffer[pos], &lsa);
 		pos += 20;
 		
 		len += lsa.length;
@@ -949,9 +920,27 @@ void ospf_process_update (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFHeader *h
 		/* Ningun LSA que hacer ACK */
 		return;
 	}
-	ospf_fill_header_end (buffer, pos);
+	ospf_fill_header_end (packet.buffer, pos);
+	packet.length = pos;
 	
-	res = sendto (miniospf->iface->s, buffer, pos, 0, (struct sockaddr *) &miniospf->all_ospf_designated_addr, sizeof (miniospf->all_ospf_designated_addr));
+	/* Armar la información de packet info */
+	packet.dst.sin_family = AF_INET;
+	packet.dst.sin_port = 0;
+	/* Para mandar el ACK, si el origen del UPDATE es todos los routers, mandar a todos los designados
+	 * Si el destino soy yo, mandar como destino el router que me envió su UPDATE */
+	if (memcmp (&header->packet->header_dst.sin_addr, &miniospf->all_ospf_routers_addr, sizeof (struct in_addr)) == 0) {
+		memcpy (&packet.dst.sin_addr, &miniospf->all_ospf_designated_addr, sizeof (struct in_addr));
+	} else {
+		memcpy (&packet.dst.sin_addr, &header->packet->header_dst.sin_addr, sizeof (struct in_addr));
+	}
+	
+	packet.src.sin_family = AF_INET;
+	packet.src.sin_port = 0;
+	memcpy (&packet.src.sin_addr, &ospf_link->main_addr->sin_addr, sizeof (struct in_addr));
+	
+	packet.ifindex = ospf_link->iface->index;
+	
+	res = socket_send (miniospf->socket, &packet);
 	
 	if (res < 0) {
 		perror ("Sendto");
@@ -959,8 +948,8 @@ void ospf_process_update (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFHeader *h
 }
 
 void ospf_send_update_router_link (OSPFMini *miniospf) {
-	OSPFLink *ospf_link = miniospf->iface;
-	unsigned char buffer [2048];
+	OSPFLink *ospf_link = miniospf->ospf_link;
+	OSPFPacket packet;
 	size_t pos;
 	uint32_t t32;
 	int len;
@@ -979,21 +968,33 @@ void ospf_send_update_router_link (OSPFMini *miniospf) {
 	}
 	
 	/* Localizar el designated router, revisar si ya tengo al menos FULL para enviar el update */
-	ospf_fill_header (4, buffer, &miniospf->config.router_id, ospf_link->area);
+	ospf_fill_header (4, packet.buffer, &miniospf->config.router_id, ospf_link->area);
 	pos = 24;
 	
 	t32 = htonl (1);
-	memcpy (&buffer[pos], &t32, sizeof (uint32_t));
+	memcpy (&packet.buffer[pos], &t32, sizeof (uint32_t));
 	pos += 4;
 	
-	len = lsa_write_lsa (&buffer[pos], &miniospf->router_lsa);
+	len = lsa_write_lsa (&packet.buffer[pos], &miniospf->router_lsa);
 	pos += len;
 	
-	ospf_fill_header_end (buffer, pos);
+	ospf_fill_header_end (packet.buffer, pos);
+	packet.length = pos;
 	
 	int res;
 	
-	res = sendto (miniospf->iface->s, buffer, pos, 0, (struct sockaddr *) &miniospf->all_ospf_designated_addr, sizeof (miniospf->all_ospf_designated_addr));
+	/* Armar la información de packet info */
+	packet.dst.sin_family = AF_INET;
+	packet.dst.sin_port = 0;
+	memcpy (&packet.dst.sin_addr, &miniospf->all_ospf_designated_addr, sizeof (struct in_addr));
+	
+	packet.src.sin_family = AF_INET;
+	packet.src.sin_port = 0;
+	memcpy (&packet.src.sin_addr, &ospf_link->main_addr->sin_addr, sizeof (struct in_addr));
+	
+	packet.ifindex = ospf_link->iface->index;
+	
+	res = socket_send (miniospf->socket, &packet);
 	
 	if (res < 0) {
 		perror ("Sendto");
@@ -1003,7 +1004,7 @@ void ospf_send_update_router_link (OSPFMini *miniospf) {
 }
 
 void ospf_check_neighbors (OSPFMini *miniospf, struct timespec now) {
-	OSPFLink *ospf_link = miniospf->iface;
+	OSPFLink *ospf_link = miniospf->ospf_link;
 	GList *g;
 	OSPFNeighbor *vecino;
 	struct timespec elapsed;
@@ -1126,42 +1127,42 @@ void ospf_fill_header_end (char *buffer, uint16_t len) {
 }
 
 void ospf_send_hello (OSPFMini *miniospf) {
-	OSPFLink *ospf_link = miniospf->iface;
+	OSPFLink *ospf_link = miniospf->ospf_link;
 	GList *g;
-	char buffer [256];
+	OSPFPacket packet;
 	size_t pos;
 	uint32_t netmask;
 	uint16_t hello_interval = htons (ospf_link->hello_interval);
 	uint32_t dead_interval = htonl (ospf_link->dead_router_interval);
 	OSPFNeighbor *vecino;
 	
-	ospf_fill_header (1, buffer, &miniospf->config.router_id, ospf_link->area);
+	ospf_fill_header (1, packet.buffer, &miniospf->config.router_id, ospf_link->area);
 	pos = 24;
 	
 	netmask = htonl (netmask4 (ospf_link->main_addr->prefix));
-	memcpy (&buffer[pos], &netmask, sizeof (uint32_t));
+	memcpy (&packet.buffer[pos], &netmask, sizeof (uint32_t));
 	pos = pos + 4;
 	
-	memcpy (&buffer[pos], &hello_interval, sizeof (hello_interval));
+	memcpy (&packet.buffer[pos], &hello_interval, sizeof (hello_interval));
 	pos = pos + 2;
 	
 	if (ospf_link->area_type == OSPF_AREA_STANDARD) {
-		buffer[pos++] = 0x02; /* External Routing */
+		packet.buffer[pos++] = 0x02; /* External Routing */
 	} else if (ospf_link->area_type == OSPF_AREA_STUB) {
-		buffer[pos++] = 0x00;
+		packet.buffer[pos++] = 0x00;
 	} else if (ospf_link->area_type == OSPF_AREA_NSSA) {
-		buffer[pos++] = 0x08;
+		packet.buffer[pos++] = 0x08;
 	}
 	
-	buffer[pos++] = 0; /* Router priority */
+	packet.buffer[pos++] = 0; /* Router priority */
 	
-	memcpy (&buffer[pos], &dead_interval, sizeof (dead_interval));
+	memcpy (&packet.buffer[pos], &dead_interval, sizeof (dead_interval));
 	pos = pos + 4;
 	
-	memcpy (&buffer[pos], &ospf_link->designated.s_addr, sizeof (uint32_t));
+	memcpy (&packet.buffer[pos], &ospf_link->designated.s_addr, sizeof (uint32_t));
 	pos = pos + 4;
 	
-	memcpy (&buffer[pos], &ospf_link->backup.s_addr, sizeof (uint32_t));
+	memcpy (&packet.buffer[pos], &ospf_link->backup.s_addr, sizeof (uint32_t));
 	pos = pos + 4;
 	
 	g = ospf_link->neighbors;
@@ -1169,17 +1170,29 @@ void ospf_send_hello (OSPFMini *miniospf) {
 		vecino = (OSPFNeighbor *) g->data;
 		
 		/* Agregar al vecino para que me reconozca */
-		memcpy (&buffer[pos], &vecino->router_id.s_addr, sizeof (uint32_t));
+		memcpy (&packet.buffer[pos], &vecino->router_id.s_addr, sizeof (uint32_t));
 		pos = pos + 4;
 		
 		g = g->next;
 	}
 	
-	ospf_fill_header_end (buffer, pos);
+	ospf_fill_header_end (packet.buffer, pos);
+	packet.length = pos;
 	
 	int res;
 	
-	res = sendto (miniospf->iface->s, buffer, pos, 0, (struct sockaddr *) &miniospf->all_ospf_routers_addr, sizeof (miniospf->all_ospf_routers_addr));
+	/* Armar la información de packet info */
+	packet.dst.sin_family = AF_INET;
+	packet.dst.sin_port = 0;
+	memcpy (&packet.dst.sin_addr, &miniospf->all_ospf_routers_addr, sizeof (struct in_addr));
+	
+	packet.src.sin_family = AF_INET;
+	packet.src.sin_port = 0;
+	memcpy (&packet.src.sin_addr, &ospf_link->main_addr->sin_addr, sizeof (struct in_addr));
+	
+	packet.ifindex = ospf_link->iface->index;
+	
+	res = socket_send (miniospf->socket, &packet);
 	
 	if (res < 0) {
 		perror ("Sendto");

@@ -67,29 +67,29 @@ void lsa_populate_router (OSPFMini *miniospf) {
 		}
 	}
 	
-	if (miniospf->iface != NULL && miniospf->iface->main_addr != NULL) {
+	if (miniospf->ospf_link != NULL && miniospf->ospf_link->main_addr != NULL) {
 		printf ("Armando el LSA, hay OSPF Link\n");
 		/* Agregar la red trásito hacia el router link */
 		memset (&empty.s_addr, 0, sizeof (empty.s_addr));
 		has_designated = 0;
 		
-		if (memcmp (&miniospf->iface->designated.s_addr, &empty.s_addr, sizeof (uint32_t)) != 0) has_designated = 1;
+		if (memcmp (&miniospf->ospf_link->designated.s_addr, &empty.s_addr, sizeof (uint32_t)) != 0) has_designated = 1;
 		
 		if (has_designated) {
 			/* Crear el transit */
 			h = lsa->router.n_links;
 			
 			lsa->router.links[h].type = LSA_ROUTER_LINK_TRANSIT;
-			memcpy (&lsa->router.links[h].link_id.s_addr, &miniospf->iface->designated.s_addr, sizeof (uint32_t));
-			memcpy (&lsa->router.links[h].data.s_addr, &miniospf->iface->main_addr->sin_addr.s_addr, sizeof (uint32_t));
+			memcpy (&lsa->router.links[h].link_id.s_addr, &miniospf->ospf_link->designated.s_addr, sizeof (uint32_t));
+			memcpy (&lsa->router.links[h].data.s_addr, &miniospf->ospf_link->main_addr->sin_addr.s_addr, sizeof (uint32_t));
 			
 			lsa->router.links[h].n_tos = 0;
 			lsa->router.links[h].tos_zero = miniospf->config.cost;
 			
 			lsa->router.n_links++;
 		} else {
-			netmask = netmask4 (miniospf->iface->main_addr->prefix);
-			memcpy (&net_id, &miniospf->iface->main_addr->sin_addr.s_addr, sizeof (uint32_t));
+			netmask = netmask4 (miniospf->ospf_link->main_addr->prefix);
+			memcpy (&net_id, &miniospf->ospf_link->main_addr->sin_addr.s_addr, sizeof (uint32_t));
 			
 			net_id = net_id & netmask;
 			

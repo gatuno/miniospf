@@ -35,6 +35,8 @@ int interface_receive_message_dellink (struct nl_msg *msg, void *arg);
 
 Interface * _interfaces_locate_by_index (GList *list, int index);
 Interface * _interfaces_locate_by_name (GList *list, char *name);
+IPAddr *interfaces_get_first_address (Interface *iface, int family);
+int interfaces_search_address4_all (NetworkWatcher *handle, struct in_addr search, Interface **ret_iface, IPAddr **ret_addr);
 
 #endif
 
