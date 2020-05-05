@@ -24,6 +24,7 @@ void ospf_resend_dd (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFNeighbor *veci
 OSPFLink *ospf_create_iface (OSPFMini *miniospf, Interface *iface, IPAddr *main_addr) {
 	OSPFLink *ospf_link;
 	struct ip_mreqn mcast_req;
+	struct timespec now;
 	
 	/* La interfaz debe tener una IP principal */
 	if (main_addr == NULL) {
@@ -75,7 +76,40 @@ OSPFLink *ospf_create_iface (OSPFMini *miniospf, Interface *iface, IPAddr *main_
 	
 	ospf_link->state = OSPF_ISM_Down;
 	
+	if (iface->flags & IFF_UP) {
+		/* La interfaz está activa, enviar hellos */
+		clock_gettime (CLOCK_MONOTONIC, &now);
+		ospf_link->state = OSPF_ISM_Waiting;
+		ospf_link->waiting_time = now;
+	}
+	
 	return ospf_link;
+}
+
+void ospf_destroy_link (OSPFMini *miniospf, OSPFLink *ospf_link) {
+	struct ip_mreqn mcast_req;
+	GList *g;
+	OSPFNeighbor *vecino;
+	
+	/* Desuscribir del grupo multicast 224.0.0.5 */
+	memset (&mcast_req, 0, sizeof (mcast_req));
+	mcast_req.imr_multiaddr.s_addr = miniospf->all_ospf_routers_addr.s_addr;
+	mcast_req.imr_ifindex = ospf_link->iface->index;
+	
+	if (setsockopt (miniospf->socket, IPPROTO_IP, IP_DROP_MEMBERSHIP, &mcast_req, sizeof (mcast_req)) < 0) {
+		perror ("Error executing IPv4 DROP_MEMBERSHIP Multicast");
+	}
+	
+	/* Destruir la lista de vecinos */
+	g = ospf_link->neighbors;
+	while (g != NULL) {
+		vecino = (OSPFNeighbor *) g->data;
+		
+		g = g->next;
+		ospf_del_neighbor (ospf_link, vecino);
+	}
+	
+	free (ospf_link);
 }
 
 void ospf_configure_router_id (OSPFMini *miniospf) {
@@ -954,6 +988,8 @@ void ospf_send_update_router_link (OSPFMini *miniospf) {
 	uint32_t t32;
 	int len;
 	OSPFNeighbor *vecino;
+	
+	if (ospf_link == NULL) return;
 	
 	vecino = ospf_locate_neighbor (ospf_link, &ospf_link->designated);
 	

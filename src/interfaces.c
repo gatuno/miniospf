@@ -48,7 +48,7 @@ static int _interfaces_receive_message_interface (struct nl_msg *msg, void *arg,
 	int remaining;
 	struct nlattr *attr;
 	NetworkWatcher *handle = (NetworkWatcher *) arg;
-	int was_new = 0;
+	int was_new = 0, up_down = 0;
 	Interface *iface;
 	uint32_t u32data;
 	
@@ -76,7 +76,14 @@ static int _interfaces_receive_message_interface (struct nl_msg *msg, void *arg,
 	
 	//printf ("Interface %d ifi_type: %d\n", iface_msg->ifi_index, iface_msg->ifi_type);
 	iface->ifi_type = iface_msg->ifi_type;
-	/* TODO: Checar aquí cambio de flags */
+	/* Checar aquí cambio de flags */
+	if ((iface->flags & IFF_UP) && (iface_msg->ifi_flags & IFF_UP) == 0) {
+		/* Pasó a interfaz down */
+		up_down = 1;
+	} else if ((iface->flags & IFF_UP) == 0 && (iface_msg->ifi_flags & IFF_UP)) {
+		/* Pasó a interfaz UP */
+		up_down = 2;
+	}
 	//printf ("Interface %d ifi_flags: %d\n", iface_msg->ifi_index, iface_msg->ifi_flags);
 	iface->flags = iface_msg->ifi_flags;
 	iface->index = iface_msg->ifi_index;
@@ -148,6 +155,19 @@ static int _interfaces_receive_message_interface (struct nl_msg *msg, void *arg,
 		/* Disparar el evento de "interfaz creada" */
 		if (handle->interface_added_cb != NULL) {
 			handle->interface_added_cb (iface, handle->cb_arg);
+		}
+	} else if (was_new == 0 && up_down != 0) {
+		/* Disparar el evento de interfaz up o down */
+		if (up_down == 1) {
+			/* Interfaz caida */
+			if (handle->interface_down_cb != NULL) {
+				handle->interface_down_cb (iface, handle->cb_arg);
+			}
+		} else if (up_down == 2) {
+			/* Interfaz activa */
+			if (handle->interface_up_cb != NULL) {
+				handle->interface_up_cb (iface, handle->cb_arg);
+			}
 		}
 	}
 	

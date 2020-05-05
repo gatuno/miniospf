@@ -228,18 +228,13 @@ void main_loop (OSPFMini *miniospf) {
 	clock_gettime (CLOCK_MONOTONIC, &now);
 	last = hello_timer = now;
 	
-	if (miniospf->ospf_link->iface->flags & IFF_UP) {
-		/* La interfaz está activa, enviar hellos */
-		miniospf->ospf_link->state = OSPF_ISM_Waiting;
-		miniospf->ospf_link->waiting_time = now;
-		ospf_send_hello (miniospf);
-	}
-	
 	/* Instalar los eventos de la red */
 	netlink_events_interface_added_func (miniospf->watcher, (InterfaceCB) ospf_change_interface_add);
 	netlink_events_interface_deleted_func (miniospf->watcher, (InterfaceCB) ospf_change_interface_delete);
 	netlink_events_ip_address_added_func (miniospf->watcher, (IPAddressCB) ospf_change_address_add);
 	netlink_events_ip_address_deleted_func (miniospf->watcher, (IPAddressCB) ospf_change_address_delete);
+	netlink_events_interface_up_func (miniospf->watcher, (InterfaceCB) ospf_change_interface_up);
+	netlink_events_interface_down_func (miniospf->watcher, (InterfaceCB) ospf_change_interface_down);
 	netlink_events_ip_address_arg (miniospf->watcher, miniospf);
 	
 	do {
@@ -275,13 +270,14 @@ void main_loop (OSPFMini *miniospf) {
 			poller[start].revents = 0;
 		}
 		
+		if (miniospf->ospf_link == NULL) continue; /* No tenemos enlace */
 		/* En caso de no haber eventos, revisar el tiempo */
 		clock_gettime (CLOCK_MONOTONIC, &now);
 		
 		elapsed = timespec_diff (hello_timer, now);
 		
 		if (elapsed.tv_sec >= miniospf->ospf_link->hello_interval) {
-			if (miniospf->ospf_link->iface->flags & IFF_UP) {
+			if (miniospf->ospf_link->state >= OSPF_ISM_Waiting) {
 				/* La interfaz está activa, enviar hellos */
 				ospf_send_hello (miniospf);
 			}

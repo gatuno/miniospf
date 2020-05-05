@@ -172,6 +172,9 @@ typedef struct {
 	IPAddressCB ip_address_added_cb;
 	IPAddressCB ip_address_deleted_cb;
 	
+	InterfaceCB interface_down_cb;
+	InterfaceCB interface_up_cb;
+	
 	void *cb_arg;
 } NetworkWatcher;
 

@@ -22,6 +22,7 @@
 
 void ospf_configure_router_id (OSPFMini *miniospf);
 OSPFLink *ospf_create_iface (OSPFMini *miniospf, Interface *iface, IPAddr *main_addr);
+void ospf_destroy_link (OSPFMini *miniospf, OSPFLink *ospf_link);
 int ospf_validate_header (unsigned char *buffer, uint16_t len, OSPFHeader *header);
 void ospf_send_hello (OSPFMini *miniospf);
 void ospf_dr_election (OSPFMini *miniospf, OSPFLink *ospf_link);
@@ -36,6 +37,7 @@ void ospf_process_update (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFHeader *h
 void ospf_neighbor_state_change (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFNeighbor *vecino, int state);
 void ospf_send_req (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFNeighbor *vecino);
 void ospf_check_neighbors (OSPFMini *miniospf, struct timespec now);
+void ospf_del_neighbor (OSPFLink *ospf_link, OSPFNeighbor *vecino);
 
 #endif
 

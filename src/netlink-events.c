@@ -87,6 +87,14 @@ void netlink_events_ip_address_deleted_func (NetworkWatcher *handler, IPAddressC
 	handler->ip_address_deleted_cb = cb;
 }
 
+void netlink_events_interface_up_func (NetworkWatcher *handler, InterfaceCB cb) {
+	handler->interface_up_cb = cb;
+}
+
+void netlink_events_interface_down_func (NetworkWatcher *handler, InterfaceCB cb) {
+	handler->interface_down_cb = cb;
+}
+
 void netlink_events_ip_address_arg (NetworkWatcher *handler, void *arg) {
 	handler->cb_arg = arg;
 }
