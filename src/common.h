@@ -28,11 +28,14 @@
 
 #include <time.h>
 
+#include <sys/types.h>
+#include <sys/socket.h>
 #include <netinet/in.h>
 #include <net/ethernet.h>
 #include <net/if.h>
 
 #include "glist.h"
+#include "netwatcher.h"
 
 #ifndef FALSE
 #define FALSE 0
@@ -77,6 +80,23 @@ enum {
 };
 
 typedef struct {
+	uint32_t type;
+	uint32_t link_state_id;
+	uint32_t advert_router;
+} ReqLSA;
+
+typedef struct {
+	uint16_t age;
+	uint8_t options;
+	uint8_t type;
+	uint32_t link_state_id;
+	uint32_t advert_router;
+	uint32_t seq_num;
+	uint16_t checksum;
+	uint16_t length;
+} ShortLSA;
+
+typedef struct {
 	struct in_addr link_id;
 	struct in_addr data;
 	
@@ -117,66 +137,7 @@ typedef struct {
 	union {
 		LSARouter router;
 	};
-} LSA;
-
-typedef struct _IPAddr {
-	sa_family_t family;
-	union {
-		struct in_addr sin_addr;
-		struct in6_addr sin6_addr;
-	};
-	uint32_t prefix;
-	
-	unsigned char flags;
-	unsigned char scope;
-} IPAddr;
-
-typedef struct _Interface {
-	char name[IFNAMSIZ];
-	int ifi_type;
-	unsigned char real_hw[ETHER_ADDR_LEN * 2 + 1];
-	unsigned int index;
-	
-	/* Para las interfaces dentro de un bridge */
-	unsigned int master_index;
-	
-	unsigned int mtu;
-	
-	/* Banderas estilo ioctl */
-	short flags;
-	
-	/* Tipo */
-	int is_loopback;
-	int is_wireless;
-	int is_bridge;
-	int is_vlan;
-	int is_nlmon;
-	int is_dummy;
-	
-	GList *address;
-} Interface;
-
-typedef void (*InterfaceCB) (Interface *, void *);
-typedef void (*IPAddressCB) (Interface *, IPAddr *, void *);
-
-typedef struct {
-	GList *interfaces;
-	
-	struct nl_sock * nl_sock_route;
-	struct nl_sock * nl_sock_route_events;
-	int fd_sock_route_events;
-	
-	InterfaceCB interface_added_cb;
-	InterfaceCB interface_deleted_cb;
-	
-	IPAddressCB ip_address_added_cb;
-	IPAddressCB ip_address_deleted_cb;
-	
-	InterfaceCB interface_down_cb;
-	InterfaceCB interface_up_cb;
-	
-	void *cb_arg;
-} NetworkWatcher;
+} CompleteLSA;
 
 typedef struct {
 	/* Pointer to data stream. */
@@ -221,7 +182,11 @@ typedef struct {
 		uint32_t dd_seq;
 	} last_recv;
 	
-	GList *requests;
+	ReqLSA requests[1];
+	int requests_pending;
+	
+	ShortLSA updates[1];
+	int updates_pending;
 } OSPFNeighbor;
 
 typedef struct {
@@ -273,7 +238,7 @@ typedef struct {
 	
 	Interface *dummy_iface;
 	
-	LSA router_lsa;
+	CompleteLSA router_lsa;
 } OSPFMini;
 
 typedef struct {
@@ -302,31 +267,14 @@ typedef struct {
 } OSPFHello;
 
 typedef struct {
-	uint16_t age;
-	uint8_t options;
-	uint8_t type;
-	uint32_t link_state_id;
-	uint32_t advert_router;
-	uint32_t seq_num;
-	uint16_t checksum;
-	uint16_t length;
-} OSPFDDLSA;
-
-typedef struct {
 	uint16_t mtu;
 	uint8_t options;
 	uint8_t flags;
 	uint32_t dd_seq;
 	
 	int n_lsas;
-	OSPFDDLSA *lsas;
+	ShortLSA *lsas;
 } OSPFDD;
-
-typedef struct {
-	uint32_t type;
-	uint32_t link_state_id;
-	uint32_t advert_router;
-} OSPFReq;
 
 extern int sigterm_pipe_fds[2];
 

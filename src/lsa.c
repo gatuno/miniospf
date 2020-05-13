@@ -11,7 +11,7 @@
 
 #define OSPF_INITIAL_SEQUENCE_NUMBER    0x80000001U
 
-int lsa_get_age (LSA *lsa) {
+int lsa_get_age (CompleteLSA *lsa) {
 	int age;
 	struct timespec now, elapsed;
 	
@@ -22,13 +22,18 @@ int lsa_get_age (LSA *lsa) {
 	return age;
 }
 
+int lsa_short_get_age (ShortLSA *lsa) {
+	/* Los Updates no traen marca de hora porque no los envejecemos */
+	return lsa->age;
+}
+
 void lsa_populate_router (OSPFMini *miniospf) {
 	int found;
 	IPAddr *addr;
 	GList *g;
 	int h;
 	uint32_t netmask, net_id;
-	LSA *lsa;
+	CompleteLSA *lsa;
 	struct in_addr empty;
 	int has_designated;
 	uint8_t tipo;
@@ -110,7 +115,7 @@ void lsa_populate_router (OSPFMini *miniospf) {
 	/* TODO: Ordernar los router link, ¿por...? */
 }
 
-int lsa_write_lsa (unsigned char *buffer, LSA *lsa) {
+int lsa_write_lsa (unsigned char *buffer, CompleteLSA *lsa) {
 	int pos, pos_len;
 	uint32_t t32;
 	uint16_t t16;
@@ -186,7 +191,7 @@ int lsa_write_lsa (unsigned char *buffer, LSA *lsa) {
 	return pos;
 }
 
-void lsa_write_lsa_header (unsigned char *buffer, LSA *lsa) {
+void lsa_write_lsa_header (unsigned char *buffer, CompleteLSA *lsa) {
 	int pos;
 	uint32_t t32;
 	uint16_t t16;
@@ -222,7 +227,7 @@ void lsa_write_lsa_header (unsigned char *buffer, LSA *lsa) {
 	pos += 2;
 }
 
-void lsa_finish_lsa_info (LSA *lsa) {
+void lsa_finish_lsa_info (CompleteLSA *lsa) {
 	unsigned char buffer_lsa[2048];
 	int len;
 	uint16_t checksum;
@@ -281,20 +286,40 @@ void lsa_init_router_lsa (OSPFMini *miniospf) {
 	lsa_update_router_lsa (miniospf);
 }
 
-void lsa_create_from_dd (OSPFDDLSA *dd, LSA *lsa) {
+void lsa_create_complete_from_short (ShortLSA *dd, CompleteLSA *lsa) {
 	if (lsa == NULL || dd == NULL) return;
 	
-	lsa->age = ntohs (dd->age);
+	memset (lsa, 0, sizeof (CompleteLSA));
+	
+	lsa->age = dd->age;
 	lsa->type = dd->type;
 	lsa->options = dd->options;
 	memcpy (&lsa->link_state_id.s_addr, &dd->link_state_id, sizeof (uint32_t));
 	memcpy (&lsa->advert_router.s_addr, &dd->advert_router, sizeof (uint32_t));
-	lsa->seq_num = ntohl (dd->seq_num);
+	lsa->seq_num = dd->seq_num;
 	lsa->checksum = dd->checksum;
-	lsa->length = ntohs (dd->length);
+	lsa->length = dd->length;
+	
+	/* Que este LSA empiece a envejecer */
+	clock_gettime (CLOCK_MONOTONIC, &lsa->age_timestamp);
 }
 
-int lsa_more_recent (LSA *l1, LSA *l2) {
+void lsa_create_short_from_complete (CompleteLSA *lsa, ShortLSA *ss) {
+	if (lsa == NULL || ss == NULL) return;
+	
+	memset (ss, 0, sizeof (ShortLSA));
+	
+	ss->age = lsa->age;
+	ss->type = lsa->type;
+	ss->options = lsa->options;
+	memcpy (&ss->link_state_id, &lsa->link_state_id.s_addr, sizeof (uint32_t));
+	memcpy (&ss->advert_router, &lsa->advert_router.s_addr, sizeof (uint32_t));
+	ss->seq_num = lsa->seq_num;
+	ss->checksum = lsa->checksum;
+	ss->length = lsa->length;
+}
+
+int lsa_more_recent (CompleteLSA *l1, CompleteLSA *l2) {
 	int r;
 	int x, y;
 
@@ -317,14 +342,44 @@ int lsa_more_recent (LSA *l1, LSA *l2) {
 	else if (!IS_LSA_MAXAGE (l1) && IS_LSA_MAXAGE (l2)) return -1;
 
 	/* compare LS age with MaxAgeDiff. */
-	if (LS_AGE (l1) - LS_AGE (l2) > OSPF_LSA_MAXAGE_DIFF) return -1;
-	else if (LS_AGE (l2) - LS_AGE (l1) > OSPF_LSA_MAXAGE_DIFF) return 1;
+	if (LSA_AGE (l1) - LSA_AGE (l2) > OSPF_LSA_MAXAGE_DIFF) return -1;
+	else if (LSA_AGE (l2) - LSA_AGE (l1) > OSPF_LSA_MAXAGE_DIFF) return 1;
 
 	/* LSAs are identical. */
 	return 0;
 }
 
-int lsa_match (LSA *l1, LSA *l2) {
+int lsa_more_recent_short (CompleteLSA *l1, ShortLSA *l2) {
+	int r;
+	int x, y;
+
+	if (l1 == NULL && l2 == NULL) return 0;
+	if (l1 == NULL) return -1;
+	if (l2 == NULL) return 1;
+	
+	/* compare LS sequence number. */
+	x = (int) l1->seq_num;
+	y = (int) l2->seq_num;
+	if (x > y) return 1;
+	if (x < y) return -1;
+
+	/* compare LS checksum. */
+	r = ntohs (l1->checksum) - ntohs (l2->checksum);
+	if (r) return r;
+	
+	/* compare LS age. */
+	if (IS_LSA_MAXAGE (l1) && !IS_LSA_SHORT_MAXAGE (l2)) return 1;
+	else if (!IS_LSA_MAXAGE (l1) && IS_LSA_SHORT_MAXAGE (l2)) return -1;
+
+	/* compare LS age with MaxAgeDiff. */
+	if (LSA_AGE (l1) - LSA_SHORT_AGE (l2) > OSPF_LSA_MAXAGE_DIFF) return -1;
+	else if (LSA_SHORT_AGE (l2) - LSA_AGE (l1) > OSPF_LSA_MAXAGE_DIFF) return 1;
+
+	/* LSAs are identical. */
+	return 0;
+}
+
+int lsa_match (CompleteLSA *l1, CompleteLSA *l2) {
 	if (l1 == NULL || l2 == NULL) return 1;
 	
 	if (l1->type != l2->type) return 1;
@@ -336,7 +391,7 @@ int lsa_match (LSA *l1, LSA *l2) {
 	return 0;
 }
 
-int lsa_request_match (OSPFReq *l1, OSPFReq *l2) {
+int lsa_match_req_complete (CompleteLSA *l1, ReqLSA *l2) {
 	if (l1 == NULL || l2 == NULL) return 1;
 	
 	if (l1->type != l2->type) return 1;
@@ -348,18 +403,43 @@ int lsa_request_match (OSPFReq *l1, OSPFReq *l2) {
 	return 0;
 }
 
-OSPFReq *lsa_create_request_from_lsa (LSA *lsa) {
-	OSPFReq *req;
+int lsa_request_match (ReqLSA *l1, ReqLSA *l2) {
+	if (l1 == NULL || l2 == NULL) return 1;
 	
-	if (lsa == NULL) return NULL;
+	if (l1->type != l2->type) return 1;
 	
-	req = (OSPFReq *) malloc (sizeof (OSPFReq));
+	if (memcmp (&l1->link_state_id, &l2->link_state_id, sizeof (uint32_t)) != 0) return 1;
 	
-	if (req == NULL) return NULL;
+	if (memcmp (&l1->advert_router, &l2->advert_router, sizeof (uint32_t)) != 0) return 1;
+	
+	return 0;
+}
+
+int lsa_match_short_complete (CompleteLSA *l1, ShortLSA *l2) {
+	if (l1 == NULL || l2 == NULL) return 1;
+	
+	if (l1->type != l2->type) return 1;
+	
+	if (memcmp (&l1->link_state_id, &l2->link_state_id, sizeof (uint32_t)) != 0) return 1;
+	
+	if (memcmp (&l1->advert_router, &l2->advert_router, sizeof (uint32_t)) != 0) return 1;
+	
+	return 0;
+}
+
+void lsa_create_request_from_complete (CompleteLSA *lsa, ReqLSA *req) {
+	if (lsa == NULL || req == NULL) return;
 	
 	req->type = lsa->type;
 	memcpy (&req->link_state_id, &lsa->link_state_id.s_addr, sizeof (uint32_t));
 	memcpy (&req->advert_router, &lsa->advert_router.s_addr, sizeof (uint32_t));
-	
-	return req;
 }
+
+void lsa_create_request_from_short (ShortLSA *lsa, ReqLSA *req) {
+	if (lsa == NULL || req == NULL) return;
+	
+	req->type = lsa->type;
+	memcpy (&req->link_state_id, &lsa->link_state_id, sizeof (uint32_t));
+	memcpy (&req->advert_router, &lsa->advert_router, sizeof (uint32_t));
+}
+

@@ -103,6 +103,8 @@ void ospf_change_interface_up (Interface *iface, void *arg) {
 			clock_gettime (CLOCK_MONOTONIC, &now);
 			miniospf->ospf_link->state = OSPF_ISM_Waiting;
 			miniospf->ospf_link->waiting_time = now;
+			
+			ospf_send_hello (miniospf);
 		}
 	}
 }

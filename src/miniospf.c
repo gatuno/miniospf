@@ -227,6 +227,7 @@ void main_loop (OSPFMini *miniospf) {
 	
 	clock_gettime (CLOCK_MONOTONIC, &now);
 	last = hello_timer = now;
+	ospf_send_hello (miniospf);
 	
 	/* Instalar los eventos de la red */
 	netlink_events_interface_added_func (miniospf->watcher, (InterfaceCB) ospf_change_interface_add);
@@ -296,7 +297,7 @@ void main_loop (OSPFMini *miniospf) {
 		ospf_check_neighbors (miniospf, now);
 		
 		/* Revisar si nuestro LSA ha envejecido mas de treinta minutos para renovarlo */
-		if (LS_AGE(&miniospf->router_lsa) > OSPF_LS_REFRESH_TIME) {
+		if (LSA_AGE(&miniospf->router_lsa) > OSPF_LSA_REFRESH_TIME) {
 			/* Refrescar nuestro LSA */
 			lsa_update_router_lsa (miniospf);
 		}
