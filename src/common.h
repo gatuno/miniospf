@@ -185,8 +185,7 @@ typedef struct {
 	ReqLSA requests[1];
 	int requests_pending;
 	
-	ShortLSA updates[1];
-	int updates_pending;
+	int update_pending;
 } OSPFNeighbor;
 
 typedef struct {

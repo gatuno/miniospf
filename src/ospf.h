@@ -38,6 +38,7 @@ void ospf_neighbor_state_change (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFNe
 void ospf_send_req (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFNeighbor *vecino);
 void ospf_check_neighbors (OSPFMini *miniospf, struct timespec now);
 void ospf_del_neighbor (OSPFLink *ospf_link, OSPFNeighbor *vecino);
+void ospf_process_ack (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFHeader *header);
 
 #endif
 

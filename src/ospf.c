@@ -151,7 +151,7 @@ OSPFNeighbor * ospf_add_neighbor (OSPFLink *ospf_link, OSPFHeader *header, OSPFH
 	vecino->priority = hello->priority;
 	vecino->way = ONE_WAY;
 	vecino->requests_pending = 0;
-	vecino->updates_pending = 0;
+	vecino->update_pending = 0;
 	
 	/* Agregar a la lista ligada */
 	ospf_link->neighbors = g_list_append (ospf_link->neighbors, vecino);
@@ -189,7 +189,7 @@ void ospf_neighbor_state_change (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFNe
 		}
 	} else if (state < FULL && old_state == FULL) {
 		/* Eliminar las actualizaciones pendientes, ya no sirve que las reenvie */
-		vecino->updates_pending = 0;
+		vecino->update_pending = 0;
 	}
 }
 
@@ -643,7 +643,7 @@ void ospf_db_desc_proc (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFHeader *hea
 		
 		/* Si él ya no tiene nada que enviar, ni yo, terminar el intercambio */
 		if (!IS_SET_DD_M (dd->flags) && !IS_SET_DD_M (vecino->dd_flags)) {
-			if (vecino->requests != NULL) {
+			if (vecino->requests_pending > 0) {
 				/* Como yo aún tengo peticiones pendientes, quedarme en LOADING */
 				ospf_neighbor_state_change (miniospf, ospf_link, vecino, LOADING);
 			} else {
@@ -659,7 +659,7 @@ void ospf_db_desc_proc (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFHeader *hea
 		ospf_send_dd (miniospf, ospf_link, vecino);
 		
 		if (!IS_SET_DD_M (dd->flags)&& !IS_SET_DD_M (vecino->dd_flags)) {
-			if (vecino->requests != NULL) {
+			if (vecino->requests_pending > 0) {
 				/* Como yo aún tengo peticiones pendientes, quedarme en LOADING */
 				ospf_neighbor_state_change (miniospf, ospf_link, vecino, LOADING);
 			} else {
@@ -994,6 +994,36 @@ void ospf_process_update (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFHeader *h
 	}
 }
 
+void ospf_process_ack (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFHeader *header) {
+	ShortLSA *ack;
+	OSPFNeighbor *vecino;
+	int len;
+	
+	vecino = ospf_locate_neighbor (ospf_link, &header->packet->src.sin_addr);
+	
+	if (vecino == NULL) {
+		/* ¿Recibí un paquete de un vecino que no tengo hello? */
+		return;
+	}
+	
+	/* Solo podemos recibir acks de vecinos mayor >= EXCHANGE */
+	if (vecino->way < EXCHANGE) {
+		return;
+	}
+	
+	len = 0; /* Tamaño de la cabecera de OSPF */
+	
+	while (len < header->len - 24) { /* Recorrer mientras haya LSA ACKs */
+		ack = (ShortLSA *) &header->buffer[len];
+		
+		/* Si es un ACK para nuestro LSA, borrar la bandera de actualización pendiente */
+		if (vecino->update_pending > 0 && lsa_match_short_complete (&miniospf->router_lsa, ack) == 0) {
+			vecino->update_pendin = 0;
+		}
+		len = len + 20;
+	}
+}
+
 void ospf_send_update_router_link (OSPFMini *miniospf) {
 	OSPFLink *ospf_link = miniospf->ospf_link;
 	OSPFPacket packet;
@@ -1051,7 +1081,18 @@ void ospf_send_update_router_link (OSPFMini *miniospf) {
 		miniospf->router_lsa.need_update = 0;
 	}
 	
-	/* TODO: Agregar este LSA a mi lista de updates enviados, para esperar el ACK */
+	/* En teoría solo envio un LSA, el mío, así que no debería haber otros... */
+	vecino->update_pending = 1;
+	
+	/* Si hay BDR, marcar que en el BDR también está pendiente el Update */
+	memset (&zero, 0, sizeof (zero));
+	if (memcmp (&vecino->backup.s_addr, &zero.s_addr, sizeof (uint32_t)) != 0) {
+		vecino = ospf_locate_neighbor (ospf_link, &ospf_link->backup);
+		
+		if (vecino != NULL) {
+			vecino->update_pending = 1;
+		}
+	}
 }
 
 void ospf_check_neighbors (OSPFMini *miniospf, struct timespec now) {
@@ -1085,13 +1126,15 @@ void ospf_check_neighbors (OSPFMini *miniospf, struct timespec now) {
 		}
 		
 		/* Si estamos estado EXCHANGE o LOADING, y no he recibido el update correspondiente a mi request, reenviar mi request */
-		if (vecino->requests != NULL && (vecino->way == EXCHANGE || vecino->way == LOADING)) {
+		if (vecino->requests_pending > 0 && (vecino->way == EXCHANGE || vecino->way == LOADING)) {
 			elapsed = timespec_diff (vecino->dd_last_sent_time, now);
 			
 			if (elapsed.tv_sec >= /* Retransmit interval */ 10) {
 				ospf_send_req (miniospf, ospf_link, vecino);
 			}
 		}
+		
+		/* TODO: Si estamos en FULL, y tenemos un update pendiente, reenviar el update */
 	}
 	
 	if (vecino_changed == 1) {

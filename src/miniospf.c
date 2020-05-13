@@ -190,6 +190,9 @@ void process_packet (OSPFMini *miniospf) {
 			case 4: /* OSPF Update */
 				ospf_process_update (miniospf, miniospf->ospf_link, &header);
 				break;
+			case 5: /* Ack */
+				ospf_process_ack (miniospf, miniospf->ospf_link, &header);
+				break;
 		}
 	} while (miniospf->has_nonblocking);
 }
