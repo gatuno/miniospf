@@ -27,10 +27,9 @@
 
 #include <net/if_arp.h>
 
-#include "common.h"
+#include "netwatcher.h"
 #include "interfaces.h"
 #include "ip-address.h"
-#include "ospf-changes.h"
 
 static int _interfaces_receive_message_interface (struct nl_msg *msg, void *arg, int first_time);
 

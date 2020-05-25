@@ -8,9 +8,19 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 
-#include <linux/if.h>
+#include <net/if.h>
+#include <net/ethernet.h>
+#include <netinet/in.h>
 
 #include "glist.h"
+
+#ifndef FALSE
+#define FALSE 0
+#endif
+
+#ifndef TRUE
+#define TRUE !FALSE
+#endif
 
 typedef struct _IPAddr {
 	sa_family_t family;

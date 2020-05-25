@@ -28,10 +28,9 @@
 #include <net/if_arp.h>
 #include <arpa/inet.h>
 
-#include "common.h"
+#include "netwatcher.h"
 #include "ip-address.h"
 #include "interfaces.h"
-#include "ospf-changes.h"
 
 static IPAddr *_ip_address_search_addr (Interface *iface, sa_family_t family, void *addr_data, uint32_t prefix) {
 	GList *g;

@@ -26,7 +26,7 @@
 #include <netlink/socket.h>
 #include <netlink/msg.h>
 
-#include "common.h"
+#include "netwatcher.h"
 
 int ip_address_receive_message_newaddr (struct nl_msg *msg, void *arg);
 int ip_address_receive_message_deladdr (struct nl_msg *msg, void *arg);

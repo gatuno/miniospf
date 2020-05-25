@@ -1,7 +1,7 @@
 #ifndef __OSPF_CHANGES_H__
 #define __OSPF_CHANGES_H__
 
-#include "netwatcher.h"
+#include "common6.h"
 
 void ospf_change_interface_add (Interface *iface, void *arg);
 void ospf_change_interface_delete (Interface *iface, void *arg);

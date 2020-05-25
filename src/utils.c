@@ -1,5 +1,6 @@
 #include <stdlib.h>
 #include <stdint.h>
+#include <string.h>
 #include <assert.h>
 #include <arpa/inet.h>
 
@@ -25,6 +26,46 @@ uint32_t netmask4 (int prefix) {
 		return ( ~((1 << (32 - prefix)) - 1) );
 	}
 } /* netmask() */
+
+/*! Create an IPv6 netmask from the given prefix length */
+void create_ipv6_netmask (struct in6_addr *netmask, int prefixlen) {
+	uint32_t *p_netmask;
+	memset(netmask, 0, sizeof(struct in6_addr));
+	if (prefixlen < 0) {
+		prefixlen = 0;
+	} else if (128 < prefixlen) {
+		prefixlen = 128;
+	}
+
+#if defined(__linux__)
+	p_netmask = &netmask->s6_addr32[0];
+#else
+	p_netmask = &netmask->__u6_addr.__u6_addr32[0];
+#endif
+	while (32 < prefixlen) {
+		*p_netmask = 0xffffffff;
+		p_netmask++;
+		prefixlen -= 32;
+	}
+	if (prefixlen != 0) {
+		*p_netmask = htonl(0xFFFFFFFF << (32 - prefixlen));
+	}
+}
+
+/*! Match if IPv6 addr1 + addr2 are within same \a mask */
+void apply_ipv6_mask (struct in6_addr *addr, const struct in6_addr *mask) {
+#if defined(__linux__)
+	addr->s6_addr32[0] &= mask->s6_addr32[0];
+	addr->s6_addr32[1] &= mask->s6_addr32[1];
+	addr->s6_addr32[2] &= mask->s6_addr32[2];
+	addr->s6_addr32[3] &= mask->s6_addr32[3];
+#else
+	addr->__u6_addr.__u6_addr32[0] &= mask->__u6_addr.__u6_addr32[0];
+	addr->__u6_addr.__u6_addr32[1] &= mask->__u6_addr.__u6_addr32[1];
+	addr->__u6_addr.__u6_addr32[2] &= mask->__u6_addr.__u6_addr32[2];
+	addr->__u6_addr.__u6_addr32[3] &= mask->__u6_addr.__u6_addr32[3];
+#endif
+}
 
 /* Returns the IP checksum of the 'n' bytes in 'data'.
  *

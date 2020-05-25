@@ -13,7 +13,7 @@ AC_PREFIX_DEFAULT([/usr])
 AC_PROG_CC
 
 # and automake
-AM_INIT_AUTOMAKE([-Wall -Werror])
+AM_INIT_AUTOMAKE([-Wall -Werror subdir-objects])
 
 # Translate this program
 AM_GNU_GETTEXT_VERSION([0.19.3])
@@ -59,6 +59,7 @@ AC_CONFIG_HEADERS([config.h])
 AC_CONFIG_FILES([
                  Makefile
                  src/Makefile
+                 src6/Makefile
                  po/Makefile.in
 ])
 #                 data/Makefile

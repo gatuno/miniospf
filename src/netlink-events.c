@@ -23,7 +23,7 @@
 #include <netlink/socket.h>
 #include <netlink/msg.h>
 
-#include "common.h"
+#include "netwatcher.h"
 #include "interfaces.h"
 #include "ip-address.h"
 

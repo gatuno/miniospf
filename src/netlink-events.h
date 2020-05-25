@@ -23,7 +23,7 @@
 #ifndef __NETLINK_EVENTS_H__
 #define __NETLINK_EVENTS_H__
 
-#include "common.h"
+#include "netwatcher.h"
 
 void netlink_events_setup (NetworkWatcher *handle);
 void netlink_events_clear (NetworkWatcher *handle);

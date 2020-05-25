@@ -27,7 +27,7 @@
 #include <netlink/msg.h>
 
 #include "glist.h"
-#include "common.h"
+#include "netwatcher.h"
 
 void interfaces_init (NetworkWatcher *handle);
 int interface_receive_message_newlink (struct nl_msg *msg, void *arg);
