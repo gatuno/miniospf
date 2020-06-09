@@ -19,6 +19,8 @@ config.log
 config.status
 .deps
 src/miniospf
+src6/miniospf6
+lib/libminiospf.a
 *.o
 stamp-h1
 
@@ -47,3 +49,5 @@ etc/Info.plist
 *~
 
 m4
+
+libtool

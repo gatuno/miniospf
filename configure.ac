@@ -9,11 +9,14 @@ AC_CONFIG_SRCDIR([src/miniospf.c])
 # For debian systems, /usr as default
 AC_PREFIX_DEFAULT([/usr])
 
+AM_PROG_AR
+LT_INIT
+
 # We need Gcc
 AC_PROG_CC
 
 # and automake
-AM_INIT_AUTOMAKE([-Wall -Werror subdir-objects])
+AM_INIT_AUTOMAKE([-Wall -Werror])
 
 # Translate this program
 AM_GNU_GETTEXT_VERSION([0.19.3])
@@ -58,6 +61,7 @@ AC_CONFIG_HEADERS([config.h])
 
 AC_CONFIG_FILES([
                  Makefile
+                 lib/Makefile
                  src/Makefile
                  src6/Makefile
                  po/Makefile.in
