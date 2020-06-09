@@ -174,6 +174,7 @@ typedef struct {
 	/* Timestemp when last Database Description packet was sent */
 	struct timespec dd_last_sent_time;
 	struct timespec request_last_sent_time;
+	struct timespec update_last_sent_time;
 
 	/* Last received Databse Description packet. */
 	struct {
@@ -185,7 +186,7 @@ typedef struct {
 	ReqLSA requests[1];
 	int requests_pending;
 	
-	int update_pending;
+	GList *updates;
 } OSPFNeighbor;
 
 typedef struct {

@@ -32,6 +32,7 @@ int lsa_match (CompleteLSA *l1, CompleteLSA *l2);
 int lsa_request_match (ReqLSA *l1, ReqLSA *l2);
 int lsa_match_req_complete (CompleteLSA *l1, ReqLSA *l2);
 int lsa_match_short_complete (CompleteLSA *l1, ShortLSA *l2);
+int lsa_match_short_short (ShortLSA *l1, ShortLSA *l2);
 
 int lsa_more_recent (CompleteLSA *l1, CompleteLSA *l2);
 int lsa_get_age (CompleteLSA *lsa);

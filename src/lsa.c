@@ -427,6 +427,18 @@ int lsa_match_short_complete (CompleteLSA *l1, ShortLSA *l2) {
 	return 0;
 }
 
+int lsa_match_short_short (ShortLSA *l1, ShortLSA *l2) {
+	if (l1 == NULL || l2 == NULL) return 1;
+	
+	if (l1->type != l2->type) return 1;
+	
+	if (memcmp (&l1->link_state_id, &l2->link_state_id, sizeof (uint32_t)) != 0) return 1;
+	
+	if (memcmp (&l1->advert_router, &l2->advert_router, sizeof (uint32_t)) != 0) return 1;
+	
+	return 0;
+}
+
 void lsa_create_request_from_complete (CompleteLSA *lsa, ReqLSA *req) {
 	if (lsa == NULL || req == NULL) return;
 	

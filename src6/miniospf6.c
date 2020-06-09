@@ -319,6 +319,7 @@ void print_usage (FILE* stream, int exit_code, const char *program_name) {
 		"                                      if not specified.\n"
 		"  -p  --passive-interface iface_name  Use this interface as passive OSPF interface.\n"
 		"                                      Will announce all the ip addresses.\n"
+		"      --instance-id  ID               Specify OSPFv3 Instance ID.\n"
 		"  -r  --router-id router_id           Specify IP address as Router ID.\n"
 		"  -e  --hello interval                Use 'interval' seconds for sending hellos.\n"
 		"  -d  --router-dead interval          Use 'interval' seconds as Router Dead Interval.\n"
@@ -335,6 +336,7 @@ void _parse_cmd_line_args (OSPFConfig *config, int argc, char **argv) {
 	const char *program_name = argv[0];
 	struct in_addr ip;
 	int ret, value;
+	int option_index;
 	
 	const char* const short_options = "hi:p:r:e:a:t:d:c:";
 	const struct option long_options[] = {
@@ -347,13 +349,25 @@ void _parse_cmd_line_args (OSPFConfig *config, int argc, char **argv) {
 		{ "area", 1, NULL, 'a' },
 		{ "area-type", 1, NULL, 't' },
 		{ "cost", 1, NULL, 'c' },
+		{ "instance-id", 1, NULL, 0 },
 		{ NULL, 0, NULL, 0 },
 	};
 	
 	do {
-		next_option = getopt_long (argc, argv, short_options, long_options, NULL);
+		option_index = 0;
+		next_option = getopt_long (argc, argv, short_options, long_options, &option_index);
 		
 		switch (next_option) {
+			case 0:
+				if (strcmp (long_options[option_index].name, "instance-id") == 0) {
+					ret = sscanf (optarg, "%d", &value);
+				
+					if (ret > 0) {
+						config->instance_id = value;
+					} else {
+						print_usage (stderr, 1, program_name);
+					}
+				}
 			case 'h':
 				print_usage (stdout, 0, program_name);
 				break;

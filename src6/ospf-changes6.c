@@ -9,7 +9,13 @@
 
 void ospf_change_interface_add (Interface *iface, void *arg) {
 	OSPFMini *miniospf = (OSPFMini *) arg;
-	/* TODO: Revisar esto */
+	
+	/* No hay dummy, y hay configuración de la dummy */
+	if (miniospf->config.dummy_interface_name[0] != 0 && miniospf->dummy_iface == NULL) {
+		if (strcmp (iface->name, miniospf->config.dummy_interface_name) == 0) {
+			miniospf->dummy_iface = iface;
+		}
+	}
 }
 
 void ospf_change_interface_delete (Interface *iface, void *arg) {
@@ -18,6 +24,7 @@ void ospf_change_interface_delete (Interface *iface, void *arg) {
 	
 	if (iface == miniospf->dummy_iface) {
 		/* La interfaz dummy desaparece. Actualizar el Inter Area Prefix LSA */
+		miniospf->dummy_iface = NULL;
 		lsa_update_intra_area_prefix (miniospf);
 	} else if (miniospf->ospf_link != NULL) {
 		if (iface == miniospf->ospf_link->iface) {

@@ -213,7 +213,6 @@ typedef struct {
 	int requests_pending;
 	
 	GList *updates;
-	int update_pending;
 } OSPFNeighbor;
 
 typedef struct {

@@ -151,7 +151,7 @@ OSPFNeighbor * ospf_add_neighbor (OSPFLink *ospf_link, OSPFHeader *header, OSPFH
 	vecino->priority = hello->priority;
 	vecino->way = ONE_WAY;
 	vecino->requests_pending = 0;
-	vecino->update_pending = 0;
+	vecino->updates = NULL;
 	
 	/* Agregar a la lista ligada */
 	ospf_link->neighbors = g_list_append (ospf_link->neighbors, vecino);
@@ -159,7 +159,60 @@ OSPFNeighbor * ospf_add_neighbor (OSPFLink *ospf_link, OSPFHeader *header, OSPFH
 	return vecino;
 }
 
+void ospf_neighbor_add_update (OSPFNeighbor *vecino, CompleteLSA *lsa) {
+	GList *g;
+	ShortLSA *other;
+	
+	/* Buscar si este LSA ya está agregado */
+	for (g = vecino->updates; g != NULL; g = g->next) {
+		other = (ShortLSA *) g->data;
+		
+		if (lsa_match_short_complete (lsa, other) == 0) {
+			/* Revisar el que el SEQ sea el que nosotros queremos */
+			if (lsa->seq_num == other->seq_num) {
+				return;
+			}
+			
+			/* Actualizar este update pendiente */
+			lsa_create_short_from_complete (lsa, other);
+			return;
+		}
+	}
+	
+	other = (ShortLSA *) malloc (sizeof (ShortLSA));
+	
+	if (other == NULL) return;
+	
+	lsa_create_short_from_complete (lsa, other);
+	
+	/* No existe este update pendiente */
+	vecino->updates = g_list_append (vecino->updates, other);
+}
+
+void ospf_neighbor_remove_update (OSPFNeighbor *vecino, ShortLSA *ss) {
+	GList *g;
+	ShortLSA *other;
+	
+	for (g = vecino->updates; g != NULL; g = g->next) {
+		other = (ShortLSA *) g->data;
+		
+		if (lsa_match_short_short (ss, other) == 0) {
+			/* Revisar el que el SEQ sea el que nosotros queremos */
+			if (ss->seq_num == other->seq_num) {
+				/* Eliminar el nodo de la lista de pendientes */
+				vecino->updates = g_list_delete_link (vecino->updates, g);
+				
+				free (other);
+				
+				return;
+			}
+		}
+	}
+}
+
 void ospf_del_neighbor (OSPFLink *ospf_link, OSPFNeighbor *vecino) {
+	g_list_free_full (vecino->updates, (GDestroyNotify) free);
+	
 	free (vecino);
 	
 	ospf_link->neighbors = g_list_remove (ospf_link->neighbors, vecino);
@@ -189,7 +242,7 @@ void ospf_neighbor_state_change (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFNe
 		}
 	} else if (state < FULL && old_state == FULL) {
 		/* Eliminar las actualizaciones pendientes, ya no sirve que las reenvie */
-		vecino->update_pending = 0;
+		g_list_free_full (vecino->updates, (GDestroyNotify) free);
 	}
 }
 
@@ -571,7 +624,6 @@ void ospf_send_req (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFNeighbor *vecin
 	ospf_fill_header (3, packet.buffer, &miniospf->config.router_id, ospf_link->area);
 	pos = 24;
 	
-	/* TODO: Hacer un ciclo aquí */
 	/* Enviar tantos requests como sea posible */
 	t32 = htonl (req->type);
 	memcpy (&packet.buffer[pos], &t32, sizeof (uint32_t));
@@ -1015,13 +1067,73 @@ void ospf_process_ack (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFHeader *head
 	
 	while (len < header->len - 24) { /* Recorrer mientras haya LSA ACKs */
 		ack = (ShortLSA *) &header->buffer[len];
+		ack->age = ntohs (ack->age);
+		ack->link_state_id = ntohl (ack->link_state_id);
+		ack->seq_num = ntohl (ack->seq_num);
+		ack->length = ntohs (ack->length);
 		
 		/* Si es un ACK para nuestro LSA, borrar la bandera de actualización pendiente */
-		if (vecino->update_pending > 0 && lsa_match_short_complete (&miniospf->router_lsa, ack) == 0) {
-			vecino->update_pending = 0;
-		}
+		ospf_neighbor_remove_update (vecino, ack);
+		
 		len = len + 20;
 	}
+}
+
+void ospf_resend_update (OSPFMini *miniospf, OSPFLink *ospf_link, OSPFNeighbor *vecino) {
+	GList *g;
+	ShortLSA *other;
+	int pos, update_count, len, pos_len;
+	OSPFPacket packet;
+	uint32_t t32;
+	
+	if (vecino->way != FULL) {
+		return;
+	}
+	
+	ospf_fill_header (4, packet.buffer, &miniospf->config.router_id, ospf_link->area);
+	pos = 24;
+	
+	pos_len = pos;
+	pos += 4;
+	
+	update_count = 0;
+	
+	for (g = vecino->updates; g != NULL; g = g->next) {
+		other = (ShortLSA *) g->data;
+		if (lsa_match_short_complete (&miniospf->router_lsa, other) == 0) {
+			len = lsa_write_lsa (&packet.buffer[pos], &miniospf->router_lsa);
+			pos += len;
+			update_count++;
+		}
+	}
+	
+	t32 = htonl (update_count);
+	memcpy (&packet.buffer[pos_len], &t32, sizeof (uint32_t));
+	
+	ospf_fill_header_end (packet.buffer, pos);
+	packet.length = pos;
+	
+	int res;
+	
+	/* Armar la información de packet info */
+	packet.dst.sin_family = AF_INET;
+	packet.dst.sin_port = 0;
+	memcpy (&packet.dst.sin_addr, &miniospf->all_ospf_designated_addr, sizeof (struct in_addr));
+	
+	packet.src.sin_family = AF_INET;
+	packet.src.sin_port = 0;
+	memcpy (&packet.src.sin_addr, &ospf_link->main_addr->sin_addr, sizeof (struct in_addr));
+	
+	packet.ifindex = ospf_link->iface->index;
+	
+	res = socket_send (miniospf->socket, &packet);
+	
+	if (res < 0) {
+		perror ("Sendto");
+		return;
+	}
+	
+	clock_gettime (CLOCK_MONOTONIC, &vecino->update_last_sent_time);
 }
 
 void ospf_send_update_router_link (OSPFMini *miniospf) {
@@ -1030,8 +1142,8 @@ void ospf_send_update_router_link (OSPFMini *miniospf) {
 	size_t pos;
 	uint32_t t32;
 	int len;
-	OSPFNeighbor *vecino;
-	struct in_addr zero;
+	OSPFNeighbor *vecino, *bdr;
+	struct timespec now;
 	
 	if (ospf_link == NULL) return;
 	
@@ -1047,6 +1159,8 @@ void ospf_send_update_router_link (OSPFMini *miniospf) {
 		/* No enviar paquetes updates si aún no tengo full con el DR */
 		return;
 	}
+	
+	bdr = ospf_locate_neighbor (ospf_link, &ospf_link->backup);
 	
 	ospf_fill_header (4, packet.buffer, &miniospf->config.router_id, ospf_link->area);
 	pos = 24;
@@ -1082,17 +1196,15 @@ void ospf_send_update_router_link (OSPFMini *miniospf) {
 		miniospf->router_lsa.need_update = 0;
 	}
 	
-	/* En teoría solo envio un LSA, el mío, así que no debería haber otros... */
-	vecino->update_pending = 1;
+	clock_gettime (CLOCK_MONOTONIC, &now);
+	
+	ospf_neighbor_add_update (vecino, &miniospf->router_lsa);
+	vecino->update_last_sent_time = now;
 	
 	/* Si hay BDR, marcar que en el BDR también está pendiente el Update */
-	memset (&zero, 0, sizeof (zero));
-	if (memcmp (&vecino->backup.s_addr, &zero.s_addr, sizeof (uint32_t)) != 0) {
-		vecino = ospf_locate_neighbor (ospf_link, &ospf_link->backup);
-		
-		if (vecino != NULL) {
-			vecino->update_pending = 1;
-		}
+	if (bdr != NULL) {
+		ospf_neighbor_add_update (bdr, &miniospf->router_lsa);
+		bdr->update_last_sent_time = now;
 	}
 }
 
@@ -1135,7 +1247,14 @@ void ospf_check_neighbors (OSPFMini *miniospf, struct timespec now) {
 			}
 		}
 		
-		/* TODO: Si estamos en FULL, y tenemos un update pendiente, reenviar el update */
+		/* Si estamos en FULL, y tenemos un update pendiente, reenviar el update */
+		if (vecino->updates != NULL && vecino->way == FULL) {
+			elapsed = timespec_diff (vecino->update_last_sent_time, now);
+			
+			if (elapsed.tv_sec >= /* Retransmit interval */ 10) {
+				ospf_resend_update (miniospf, ospf_link, vecino);
+			}
+		}
 	}
 	
 	if (vecino_changed == 1) {
